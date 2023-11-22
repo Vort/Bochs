@@ -147,6 +147,7 @@ cdrom_win32_c::~cdrom_win32_c(void)
   if (fd >= 0) {
     if (hFile != INVALID_HANDLE_VALUE)
       CloseHandle(hFile);
+    fd = -1;
   }
 }
 
