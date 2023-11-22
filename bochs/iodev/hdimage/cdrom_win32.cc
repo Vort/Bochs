@@ -211,6 +211,12 @@ void cdrom_win32_c::eject_cdrom()
         DeviceIoControl(hFile, IOCTL_STORAGE_EJECT_MEDIA, NULL, 0, NULL, 0, &lpBytesReturned, NULL);
       }
     }
+    else {
+      if (hFile != INVALID_HANDLE_VALUE) {
+        CloseHandle(hFile);
+        hFile = INVALID_HANDLE_VALUE;
+      }
+    }
     fd = -1;
   }
 }
