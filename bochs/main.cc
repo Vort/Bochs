@@ -18,6 +18,8 @@
 //  License along with this library; if not, write to the Free Software
 //  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301 USA
 
+#include <crtdbg.h>
+
 #include "bochs.h"
 #include "bxversion.h"
 #include "param_names.h"
@@ -520,10 +522,23 @@ int WINAPI WinMain(
 #endif
 
 #if !defined(__WXMSW__)
+int AllocHook(int allocType, void *userData, size_t size,
+  int blockType, long requestNumber,
+  const unsigned char *filename, int lineNumber)
+{
+  if (size == 16384000)
+  {
+    _CrtDbgBreak();
+  }
+  return TRUE;
+}
+
 // normal main function, presently in for all cases except for
 // wxWidgets under win32.
 int CDECL main(int argc, char *argv[])
 {
+  _CrtSetAllocHook(AllocHook);
+  _CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);
   bx_startup_flags.argc = argc;
   bx_startup_flags.argv = argv;
 #ifdef WIN32
