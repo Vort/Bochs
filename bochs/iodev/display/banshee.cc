@@ -945,6 +945,8 @@ void bx_banshee_c::mem_write(bx_phy_address addr, unsigned len, void *data)
     } else if (offset < 0x100000) {
       agp_reg_write((offset >> 2) & 0x7f, value);
     } else if (offset < 0x200000) {
+      if (((offset >> 2) & 0x7f) == blt_dstBaseAddr)
+        BX_ERROR(("Memory write blt_dstBaseAddr: 0x%08x", value));
       blt_reg_write((offset >> 2) & 0x7f, value);
     } else if (offset < 0x600000) {
       register_w_common((offset - 0x200000) >> 2, value);
@@ -1061,7 +1063,7 @@ Bit32u bx_banshee_c::agp_reg_read(Bit8u reg)
     default:
       result = v->banshee.agp[reg];
   }
-  BX_DEBUG(("AGP read register 0x%03x (%s) result = 0x%08x", reg<<2,
+  BX_ERROR(("AGP read register 0x%03x (%s) result = 0x%08x", reg<<2,
             banshee_agp_reg_name[reg], result));
   return result;
 }
@@ -1070,7 +1072,7 @@ void bx_banshee_c::agp_reg_write(Bit8u reg, Bit32u value)
 {
   Bit8u fifo_idx = (reg >= cmdBaseAddr1);
 
-  BX_DEBUG(("AGP write register 0x%03x (%s) value = 0x%08x", reg<<2,
+  BX_ERROR(("AGP write register 0x%03x (%s) value = 0x%08x", reg<<2,
             banshee_agp_reg_name[reg], value));
   switch (reg) {
     case cmdBaseAddr0:
@@ -1108,7 +1110,9 @@ void bx_banshee_c::agp_reg_write(Bit8u reg, Bit32u value)
     case cmdBump0:
     case cmdBump1:
       if (value > 0) {
-        BX_ERROR(("cmdBump%d not implemented (value = 0x%04x)", fifo_idx, (Bit16u)value));
+        BX_LOCK(cmdfifo_mutex);
+        v->fbi.cmdfifo[fifo_idx].amin += value * 4;
+        BX_UNLOCK(cmdfifo_mutex);
       }
       break;
     case cmdRdPtrL0:
@@ -1780,12 +1784,18 @@ void bx_banshee_c::blt_rectangle_fill()
   dy = BLT.dst_y;
   w = BLT.dst_w;
   h = BLT.dst_h;
-  BX_DEBUG(("Rectangle fill: %d x %d  ROP0 %02X", w, h, BLT.rop[0]));
+  BX_ERROR(("Rectangle fill: %d x %d  ROP0 %02X", w, h, BLT.rop[0]));
   if (!blt_apply_clipwindow(NULL, NULL, &dx, &dy, &w, &h)) {
     BLT.busy = 0;
     return;
   }
   BX_LOCK(render_mutex);
+  if (h == 0x0fef && BLT.dst_base == 0x00d00000)
+  {
+	  BX_ERROR(("Skipping bad blt"));
+  }
+  else
+  {
   dst_ptr = &v->fbi.ram[BLT.dst_base + dy * dpitch + dx * dpxsize];
   for (y = 0; y < h; y++) {
     dst_ptr1 = dst_ptr;
@@ -1797,6 +1807,7 @@ void bx_banshee_c::blt_rectangle_fill()
       dst_ptr1 += dpxsize;
     }
     dst_ptr += dpitch;
+  }
   }
   blt_complete();
   BX_UNLOCK(render_mutex);
@@ -1820,7 +1831,7 @@ void bx_banshee_c::blt_pattern_fill_mono()
   dy = BLT.dst_y;
   w = BLT.dst_w;
   h = BLT.dst_h;
-  BX_DEBUG(("Pattern fill mono: %d x %d  ROP0 %02X", w, h, BLT.rop[0]));
+  BX_ERROR(("Pattern fill mono: %d x %d  ROP0 %02X", w, h, BLT.rop[0]));
   if (!blt_apply_clipwindow(NULL, NULL, &dx, &dy, &w, &h)) {
     BLT.busy = 0;
     return;
@@ -1871,7 +1882,7 @@ void bx_banshee_c::blt_pattern_fill_color()
   dy = BLT.dst_y;
   w = BLT.dst_w;
   h = BLT.dst_h;
-  BX_DEBUG(("Pattern fill color: %d x %d  ROP0 %02X", w, h, BLT.rop[0]));
+  BX_ERROR(("Pattern fill color: %d x %d  ROP0 %02X", w, h, BLT.rop[0]));
   if (!blt_apply_clipwindow(NULL, NULL, &dx, &dy, &w, &h)) {
     BLT.busy = 0;
     return;
@@ -1920,7 +1931,7 @@ void bx_banshee_c::blt_screen_to_screen()
   dy = BLT.dst_y;
   w = BLT.dst_w;
   h = BLT.dst_h;
-  BX_DEBUG(("Screen to screen blt: %d x %d  ROP0 %02X", w, h, BLT.rop[0]));
+  BX_ERROR(("Screen to screen blt: %d x %d  ROP0 %02X", w, h, BLT.rop[0]));
   if ((BLT.src_fmt != 0) && (BLT.dst_fmt != BLT.src_fmt)) {
     BX_ERROR(("Pixel format conversion not supported yet"));
   }
@@ -2024,7 +2035,7 @@ void bx_banshee_c::blt_screen_to_screen_pattern()
   dy = BLT.dst_y;
   w = BLT.dst_w;
   h = BLT.dst_h;
-  BX_DEBUG(("Screen to screen pattern blt: %d x %d  ROP0 %02X", w, h, BLT.rop[0]));
+  BX_ERROR(("Screen to screen pattern blt: %d x %d  ROP0 %02X", w, h, BLT.rop[0]));
   if (BLT.dst_fmt != BLT.src_fmt) {
     BX_ERROR(("Pixel format conversion not supported yet"));
   }
@@ -2116,7 +2127,7 @@ void bx_banshee_c::blt_screen_to_screen_stretch()
   h0 = BLT.src_h;
   w1 = BLT.dst_w;
   h1 = BLT.dst_h;
-  BX_DEBUG(("Screen to screen stretch blt: : %d x %d -> %d x %d  ROP0 %02X",
+  BX_ERROR(("Screen to screen stretch blt: : %d x %d -> %d x %d  ROP0 %02X",
             w0, h0, w1, h1, BLT.rop[0]));
   if (BLT.dst_fmt != BLT.src_fmt) {
     BX_ERROR(("Pixel format conversion not supported yet"));
@@ -2183,7 +2194,7 @@ void bx_banshee_c::blt_host_to_screen()
 
   w = BLT.dst_w;
   h = BLT.dst_h;
-  BX_DEBUG(("Host to screen blt: %d x %d  ROP0 %02X", w, h, BLT.rop[0]));
+  BX_ERROR(("Host to screen blt: %d x %d  ROP0 %02X", w, h, BLT.rop[0]));
   if ((pxconv_table[srcfmt] & (1 << BLT.dst_fmt)) == 0) {
     BX_ERROR(("Pixel format conversion not supported"));
   }
@@ -2319,7 +2330,7 @@ void bx_banshee_c::blt_host_to_screen_pattern()
 
   w = BLT.dst_w;
   h = BLT.dst_h;
-  BX_DEBUG(("Host to screen pattern blt: %d x %d  ROP0 %02X", w, h, BLT.rop[0]));
+  BX_ERROR(("Host to screen pattern blt: %d x %d  ROP0 %02X", w, h, BLT.rop[0]));
   if ((srcfmt != 0) && (BLT.dst_fmt != srcfmt)) {
     BX_ERROR(("Pixel format conversion not supported yet"));
   }
@@ -2716,7 +2727,7 @@ void bx_banshee_c::blt_polygon_fill(bool force)
         dst_ptr1 += dpxsize;
       }
     }
-    BX_DEBUG(("Polygon fill: L0=(%d,%d) L1=(%d,%d) R0=(%d,%d) R1=(%d,%d) ROP0 %02X",
+	BX_ERROR(("Polygon fill: L0=(%d,%d) L1=(%d,%d) R0=(%d,%d) R1=(%d,%d) ROP0 %02X",
               BLT.pgn_l0x, BLT.pgn_l0y, BLT.pgn_l1x, BLT.pgn_l1y,
               BLT.pgn_r0x, BLT.pgn_r0y, BLT.pgn_r1x, BLT.pgn_r1y, BLT.rop[0]));
     if (y1 == BLT.pgn_l1y) {

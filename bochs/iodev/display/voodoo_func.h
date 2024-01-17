@@ -2886,6 +2886,9 @@ Bit32u cmdfifo_calc_depth_needed(cmdfifo_info *f)
 
 void cmdfifo_w(cmdfifo_info *f, Bit32u fbi_offset, Bit32u data)
 {
+  BX_ERROR(("CMDFIFO write: AMin=0x%08x AMax=0x%08x WroteTo:0x%08x RdPtr:0x%08x value:0x%08x",
+    f->amin, f->amax, fbi_offset, f->rdptr, data));
+
   BX_LOCK(cmdfifo_mutex);
   *(Bit32u*)(&v->fbi.ram[fbi_offset]) = data;
   /* count holes? */
@@ -2915,6 +2918,10 @@ void cmdfifo_w(cmdfifo_info *f, Bit32u fbi_offset, Bit32u data)
       f->amax = fbi_offset;
     }
   }
+  else {
+    f->amax = fbi_offset;
+    f->depth++;
+  }
   if (f->depth_needed == BX_MAX_BIT32U) {
     f->depth_needed = cmdfifo_calc_depth_needed(f);
   }
@@ -2932,6 +2939,8 @@ Bit32u cmdfifo_r(cmdfifo_info *f)
   Bit32u data;
 
   data = *(Bit32u*)(&v->fbi.ram[f->rdptr & v->fbi.mask]);
+  BX_ERROR(("CMDFIFO read: AMin=0x%08x AMax=0x%08x RdPtr:0x%08x value:0x%08x",
+	  f->amin, f->amax, f->rdptr, data));
   f->rdptr += 4;
   if (f->rdptr >= f->end) {
     BX_INFO(("CMDFIFO RdPtr rollover"));
@@ -2943,7 +2952,7 @@ Bit32u cmdfifo_r(cmdfifo_info *f)
 
 void cmdfifo_process(cmdfifo_info *f)
 {
-  Bit32u command, data, mask, nwords, regaddr;
+  Bit32u command, data, mask, nwords, regaddr, prev_rdptr;
   Bit8u type, code, nvertex, smode, disbytes;
   bool inc, pcolor;
   voodoo_reg reg;
@@ -2959,10 +2968,10 @@ void cmdfifo_process(cmdfifo_info *f)
         case 0: // NOP
           break;
         case 3: // JMP
+          prev_rdptr = f->rdptr;
           f->rdptr = (command >> 4) & 0xfffffc;
-          if (f->count_holes) {
-            BX_DEBUG(("cmdfifo_process(): JMP 0x%08x", f->rdptr));
-          }
+          f->amin -= prev_rdptr - f->rdptr;
+          BX_DEBUG(("cmdfifo_process(): JMP 0x%08x", f->rdptr));
           break;
         case 4: // TODO: JMP AGP
           data = cmdfifo_r(f);
@@ -2996,6 +3005,8 @@ void cmdfifo_process(cmdfifo_info *f)
           if (v->type < VOODOO_BANSHEE) {
             register_w(regaddr, data, 1);
           } else {
+			if (regaddr == blt_dstBaseAddr)
+              BX_ERROR(("cmdfifo write blt_dstBaseAddr: 0x%08x", data));
             Banshee_2D_write(regaddr, data);
           }
           BX_LOCK(cmdfifo_mutex);
@@ -3521,6 +3532,8 @@ void register_w_common(Bit32u offset, Bit32u data)
       BX_ERROR(("Writing to register %s not supported yet", v->regnames[regnum]));
       break;
 
+	case leftOverlayBuf:
+      BX_ERROR(("leftOverlayBuf = %08X", data));
     default:
       if (fifo_add_common(FIFO_WR_REG | offset, data)) {
         BX_LOCK(fifo_mutex);
