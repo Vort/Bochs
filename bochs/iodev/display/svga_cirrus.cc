@@ -451,6 +451,9 @@ void bx_svga_cirrus_c::redraw_area(unsigned x0, unsigned y0, unsigned width,
   } else {
     yt1 = (BX_CIRRUS_THIS svga_yres - 1) / Y_TILESIZE;
   }
+  if ((x0 + width) > svga_xres) {
+    BX_CIRRUS_THIS redraw_area(0, y0 + 1, width, height);
+  }
   for (yti=yt0; yti<=yt1; yti++) {
     for (xti=xt0; xti<=xt1; xti++) {
       SET_TILE_UPDATED(BX_CIRRUS_THIS, xti, yti, 1);
@@ -2444,6 +2447,7 @@ void bx_svga_cirrus_c::svga_bitblt()
   Bit32u dstaddr;
   Bit32u srcaddr;
   Bit32u offset;
+  Bit32u offset2;
   Bit8u *cregs = BX_CIRRUS_THIS control.reg;
 
   tmp16 = ReadHostWordFromLittleEndian((Bit16u*) &cregs[0x20]);
@@ -2534,6 +2538,13 @@ void bx_svga_cirrus_c::svga_bitblt()
       }
     } else {
       BX_CIRRUS_THIS bitblt.rop_handler = svga_get_fwd_rop_handler(BX_CIRRUS_THIS bitblt.bltrop);
+      offset2 = offset + (BX_CIRRUS_THIS redraw.h * BX_CIRRUS_THIS bitblt.dstpitch);
+      offset2 &= BX_CIRRUS_THIS memsize_mask;
+      if (offset2 < offset) {
+        BX_DEBUG(("Address wrap detected"));
+        BX_CIRRUS_THIS redraw.x = 0;
+        BX_CIRRUS_THIS redraw.y = 0;
+      }
     }
 
     BX_DEBUG(("BLT redraw: x = %d, y = %d, w = %d, h = %d", BX_CIRRUS_THIS redraw.x,
@@ -3108,6 +3119,7 @@ void bx_svga_cirrus_c::svga_colorexpand_transp_memsrc()
   Bit8u *src = &BX_CIRRUS_THIS bitblt.memsrc[0];
   Bit8u color[4];
   int x, pattern_x, srcskipleft;
+  Bit32u dstaddr;
   Bit8u *dst;
   unsigned bits, bits_xor, bitmask;
   int byteofs;
@@ -3135,7 +3147,7 @@ void bx_svga_cirrus_c::svga_colorexpand_transp_memsrc()
     bits_xor = 0x00;
   }
 
-  dst = BX_CIRRUS_THIS bitblt.dst + pattern_x;
+  dstaddr = (BX_CIRRUS_THIS bitblt.dstaddr + pattern_x) & BX_CIRRUS_THIS memsize_mask;
   bitmask = 0x80 >> srcskipleft;
   bits = *src++ ^ bits_xor;
   for (x = pattern_x; x < BX_CIRRUS_THIS bitblt.bltwidth; x+=BX_CIRRUS_THIS bitblt.pixelwidth) {
@@ -3144,10 +3156,11 @@ void bx_svga_cirrus_c::svga_colorexpand_transp_memsrc()
       bits = *src++ ^ bits_xor;
     }
     if (bits & bitmask) {
+      dst = BX_CIRRUS_THIS s.memory + dstaddr;
       (*BX_CIRRUS_THIS bitblt.rop_handler)(
           dst, &color[0], 0, 0, BX_CIRRUS_THIS bitblt.pixelwidth, 1);
     }
-    dst += BX_CIRRUS_THIS bitblt.pixelwidth;
+    dstaddr += BX_CIRRUS_THIS bitblt.pixelwidth;
     bitmask >>= 1;
   }
 }
@@ -3179,6 +3192,7 @@ bx_svga_cirrus_c::svga_asyncbitblt_next()
 
   if (BX_CIRRUS_THIS bitblt.memsrc_needed > 0) {
     BX_CIRRUS_THIS bitblt.dst += BX_CIRRUS_THIS bitblt.dstpitch;
+    BX_CIRRUS_THIS bitblt.dstaddr += BX_CIRRUS_THIS bitblt.dstpitch;
     BX_CIRRUS_THIS bitblt.memsrc_needed -= BX_CIRRUS_THIS bitblt.srcpitch;
     if (BX_CIRRUS_THIS bitblt.memsrc_needed <= 0) {
       BX_CIRRUS_THIS redraw_area(BX_CIRRUS_THIS redraw.x, BX_CIRRUS_THIS redraw.y,
