@@ -2915,6 +2915,10 @@ void cmdfifo_w(cmdfifo_info *f, Bit32u fbi_offset, Bit32u data)
       f->amax = fbi_offset;
     }
   }
+  else {
+    f->amax = fbi_offset;
+    f->depth++;
+  }
   if (f->depth_needed == BX_MAX_BIT32U) {
     f->depth_needed = cmdfifo_calc_depth_needed(f);
   }
@@ -2943,7 +2947,7 @@ Bit32u cmdfifo_r(cmdfifo_info *f)
 
 void cmdfifo_process(cmdfifo_info *f)
 {
-  Bit32u command, data, mask, nwords, regaddr;
+  Bit32u command, data, mask, nwords, regaddr, prev_rdptr;
   Bit8u type, code, nvertex, smode, disbytes;
   bool inc, pcolor;
   voodoo_reg reg;
@@ -2959,10 +2963,12 @@ void cmdfifo_process(cmdfifo_info *f)
         case 0: // NOP
           break;
         case 3: // JMP
+          prev_rdptr = f->rdptr;
           f->rdptr = (command >> 4) & 0xfffffc;
-          if (f->count_holes) {
-            BX_DEBUG(("cmdfifo_process(): JMP 0x%08x", f->rdptr));
+          if (!f->count_holes) {
+            f->amin -= prev_rdptr - f->rdptr;
           }
+          BX_DEBUG(("cmdfifo_process(): JMP 0x%08x", f->rdptr));
           break;
         case 4: // TODO: JMP AGP
           data = cmdfifo_r(f);

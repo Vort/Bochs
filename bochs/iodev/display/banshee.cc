@@ -1108,7 +1108,9 @@ void bx_banshee_c::agp_reg_write(Bit8u reg, Bit32u value)
     case cmdBump0:
     case cmdBump1:
       if (value > 0) {
-        BX_ERROR(("cmdBump%d not implemented (value = 0x%04x)", fifo_idx, (Bit16u)value));
+        BX_LOCK(cmdfifo_mutex);
+        v->fbi.cmdfifo[fifo_idx].amin += value * 4;
+        BX_UNLOCK(cmdfifo_mutex);
       }
       break;
     case cmdRdPtrL0:
