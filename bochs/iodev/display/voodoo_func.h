@@ -2886,8 +2886,8 @@ Bit32u cmdfifo_calc_depth_needed(cmdfifo_info *f)
 
 void cmdfifo_w(cmdfifo_info *f, Bit32u fbi_offset, Bit32u data)
 {
-  BX_ERROR(("CMDFIFO write: AMin=0x%08x AMax=0x%08x WroteTo:0x%08x RdPtr:0x%08x value:0x%08x",
-    f->amin, f->amax, fbi_offset, f->rdptr, data));
+  BX_ERROR(("CMDFIFO wr: AMin=0x%08x AMax=0x%08x RdPtr:0x%08x WrPtr:0x%08x Val:0x%08x Dep:0x%06x Hol:%d",
+    f->amin, f->amax, f->rdptr, fbi_offset, data, f->depth, f->holes));
 
   BX_LOCK(cmdfifo_mutex);
   *(Bit32u*)(&v->fbi.ram[fbi_offset]) = data;
@@ -2939,8 +2939,8 @@ Bit32u cmdfifo_r(cmdfifo_info *f)
   Bit32u data;
 
   data = *(Bit32u*)(&v->fbi.ram[f->rdptr & v->fbi.mask]);
-  BX_ERROR(("CMDFIFO read: AMin=0x%08x AMax=0x%08x RdPtr:0x%08x value:0x%08x",
-	  f->amin, f->amax, f->rdptr, data));
+  BX_ERROR(("CMDFIFO rd: AMin=0x%08x AMax=0x%08x RdPtr:0x%08x Val:0x%08x Dep:0x%06x Hol:%d",
+	  f->amin, f->amax, f->rdptr, data, f->depth, f->holes));
   f->rdptr += 4;
   if (f->rdptr >= f->end) {
     BX_INFO(("CMDFIFO RdPtr rollover"));
@@ -2970,8 +2970,9 @@ void cmdfifo_process(cmdfifo_info *f)
         case 3: // JMP
           prev_rdptr = f->rdptr;
           f->rdptr = (command >> 4) & 0xfffffc;
-          f->amin -= prev_rdptr - f->rdptr;
-          BX_DEBUG(("cmdfifo_process(): JMP 0x%08x", f->rdptr));
+          if (!f->count_holes)
+            f->amin -= prev_rdptr - f->rdptr;
+          BX_ERROR(("cmdfifo_process(): JMP 0x%08x", f->rdptr));
           break;
         case 4: // TODO: JMP AGP
           data = cmdfifo_r(f);

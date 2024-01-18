@@ -1147,7 +1147,7 @@ void bx_banshee_c::agp_reg_write(Bit8u reg, Bit32u value)
       break;
     case cmdHoleCnt0:
     case cmdHoleCnt1:
-      if (value > 0) {
+      if (value != v->fbi.cmdfifo[fifo_idx].holes) {
         BX_ERROR(("cmdHoleCnt%d not supported yet", fifo_idx));
       }
       break;
