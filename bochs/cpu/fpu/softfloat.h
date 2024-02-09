@@ -268,17 +268,17 @@ int float64_is_denormal(float64);
 | Software IEC/IEEE floating-point types.
 *----------------------------------------------------------------------------*/
 
-#ifdef BX_BIG_ENDIAN
-struct floatx80 {	// leave alignment to compiler
-    Bit16u exp;
-    Bit64u fraction;
-};
-#else
-struct floatx80 {
-    Bit64u fraction;
-    Bit16u exp;
-};
-#endif
+//#ifdef BX_BIG_ENDIAN
+//struct floatx80 {	// leave alignment to compiler
+//    Bit16u exp;
+//    Bit64u fraction;
+//};
+//#else
+//struct floatx80 {
+//    Bit64u fraction;
+//    Bit16u exp;
+//};
+//#endif
 
 /*----------------------------------------------------------------------------
 | Software IEC/IEEE integer-to-floating-point conversion routines.
