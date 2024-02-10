@@ -38,6 +38,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #define softfloat_types_h 1
 
 #include <stdint.h>
+#include "platform.h"
 
 /*----------------------------------------------------------------------------
 | Types used to pass 16-bit, 32-bit, 64-bit, and 128-bit floating-point
