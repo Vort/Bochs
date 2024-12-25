@@ -106,19 +106,6 @@ enum
 #define REG_WPF         (REGISTER_WRITE | REGISTER_PIPELINED | REGISTER_FIFO)
 #define REG_RWPF        (REGISTER_READ | REGISTER_WRITE | REGISTER_PIPELINED | REGISTER_FIFO)
 
-/* lookup bits is the log2 of the size of the reciprocal/log table */
-#define RECIPLOG_LOOKUP_BITS  9
-
-/* input precision is how many fraction bits the input value has; this is a 64-bit number */
-#define RECIPLOG_INPUT_PREC   32
-
-/* lookup precision is how many fraction bits each table entry contains */
-#define RECIPLOG_LOOKUP_PREC  22
-
-/* output precision is how many fraction bits the result should have */
-#define RECIP_OUTPUT_PREC   15
-#define LOG_OUTPUT_PREC     8
-
 
 
 /*************************************
@@ -1155,9 +1142,6 @@ static const Bit8u dither_matrix_2x2[16] =
 /* macro for clamping a value between minimum and maximum values */
 #define CLAMP(val,min,max)    do { if ((val) < (min)) { (val) = (min); } else if ((val) > (max)) { (val) = (max); } } while (0)
 
-/* macro to compute the base 2 log for LOD calculations */
-#define LOGB2(x)        (log((double)(x)) / log(2.0))
-
 
 
 /*************************************
@@ -2036,95 +2020,48 @@ BX_CPP_INLINE Bit8u _count_leading_zeros(Bit32u value)
 }
 #endif
 
-/*************************************
- *
- *  Computes a fast 16.16 reciprocal
- *  of a 16.32 value; used for
- *  computing 1/w in the rasterizer.
- *
- *  Since it is trivial to also
- *  compute log2(1/w) = -log2(w) at
- *  the same time, we do that as well
- *  to 16.8 precision for LOD
- *  calculations.
- *
- *  On a Pentium M, this routine is
- *  20% faster than a 64-bit integer
- *  divide and also produces the log
- *  for free.
- *
- *************************************/
 
-BX_CPP_INLINE Bit32s fast_reciplog(Bit64s value, Bit32s *log2)
+//-------------------------------------------------
+//  fast_log2 - computes the log2 of a double-
+//  precision value as a 24.8 value; if the double
+//  was converted from a fixed-point integer, the
+//  number of fractional bits should be specified
+//  by fracbits
+//-------------------------------------------------
+
+BX_CPP_INLINE Bit32s fast_log2(double value, int fracbits = 0)
 {
-  extern Bit32u voodoo_reciplog[];
-  Bit32u temp, recip, rlog;
-  Bit32u interp;
-  Bit32u *table;
-  int neg = false;
-  int lz, exp = 0;
+  // negative values return 0
+  if (unlikely(value < 0))
+    return 0;
 
-  /* always work with unsigned numbers */
-  if (value < 0)
+  // convert the value to a raw integer
+  union { double d; Bit64u i; } temp;
+  temp.d = value;
+
+  // we only care about the 11-bit exponent and top 7 bits of mantissa
+  // (sign is already assured to be 0)
+  Bit32u ival = temp.i >> 45;
+
+  // extract exponent, unbias, and adjust for fixed-point fraction
+  Bit32s exp = (ival >> 7) - 1023 - fracbits;
+
+  // use top 7 bits of mantissa to look up fractional log
+  static Bit8u const s_log2_table[128] =
   {
-    value = -value;
-    neg = true;
-  }
+      0,   2,   5,   8,  11,  14,  16,  19,  22,  25,  27,  30,  33,  35,  38,  40,
+     43,  46,  48,  51,  53,  56,  58,  61,  63,  65,  68,  70,  73,  75,  77,  80,
+     82,  84,  87,  89,  91,  93,  96,  98, 100, 102, 104, 106, 109, 111, 113, 115,
+    117, 119, 121, 123, 125, 127, 129, 132, 134, 136, 138, 140, 141, 143, 145, 147,
+    149, 151, 153, 155, 157, 159, 161, 162, 164, 166, 168, 170, 172, 173, 175, 177,
+    179, 181, 182, 184, 186, 188, 189, 191, 193, 194, 196, 198, 200, 201, 203, 205,
+    206, 208, 209, 211, 213, 214, 216, 218, 219, 221, 222, 224, 225, 227, 229, 230,
+    232, 233, 235, 236, 238, 239, 241, 242, 244, 245, 247, 248, 250, 251, 253, 254
+  };
 
-  /* if we've spilled out of 32 bits, push it down under 32 */
-  if (value & BX_CONST64(0xffff00000000))
-  {
-    temp = (Bit32u)(value >> 16);
-    exp -= 16;
-  }
-  else
-    temp = (Bit32u)value;
-
-  /* if the resulting value is 0, the reciprocal is infinite */
-  if (temp == 0)
-  {
-    *log2 = 1000 << LOG_OUTPUT_PREC;
-    return neg ? 0x80000000 : 0x7fffffff;
-  }
-
-  /* determine how many leading zeros in the value and shift it up high */
-  lz = count_leading_zeros(temp);
-  temp <<= lz;
-  exp += lz;
-
-  /* compute a pointer to the table entries we want */
-  /* math is a bit funny here because we shift one less than we need to in order */
-  /* to account for the fact that there are two Bit32u's per table entry */
-  table = &voodoo_reciplog[(temp >> (31 - RECIPLOG_LOOKUP_BITS - 1)) & ((2 << RECIPLOG_LOOKUP_BITS) - 2)];
-
-  /* compute the interpolation value */
-  interp = (temp >> (31 - RECIPLOG_LOOKUP_BITS - 8)) & 0xff;
-
-  /* do a linear interpolatation between the two nearest table values */
-  /* for both the log and the reciprocal */
-  rlog = (table[1] * (0x100 - interp) + table[3] * interp) >> 8;
-  recip = (table[0] * (0x100 - interp) + table[2] * interp) >> 8;
-
-  /* the log result is the fractional part of the log; round it to the output precision */
-  rlog = (rlog + (1 << (RECIPLOG_LOOKUP_PREC - LOG_OUTPUT_PREC - 1))) >> (RECIPLOG_LOOKUP_PREC - LOG_OUTPUT_PREC);
-
-  /* the exponent is the non-fractional part of the log; normally, we would subtract it from rlog */
-  /* but since we want the log(1/value) = -log(value), we subtract rlog from the exponent */
-  *log2 = ((exp - (31 - RECIPLOG_INPUT_PREC)) << LOG_OUTPUT_PREC) - rlog;
-
-  /* adjust the exponent to account for all the reciprocal-related parameters to arrive at a final shift amount */
-  exp += (RECIP_OUTPUT_PREC - RECIPLOG_LOOKUP_PREC) - (31 - RECIPLOG_INPUT_PREC);
-
-  /* shift by the exponent */
-  if (exp < 0)
-    recip >>= -exp;
-  else
-    recip <<= exp;
-
-  /* on the way out, apply the original sign to the reciprocal */
-  return neg ? -((Bit32s)recip) : recip;
+  // combine the integral and fractional parts
+  return (exp << 8) | s_log2_table[ival & 127];
 }
-
 
 
 /*************************************
@@ -2876,7 +2813,9 @@ do                                                                              
 {                                                                                \
   Bit32s blendr, blendg, blendb, blenda;                                         \
   Bit32s tr, tg, tb, ta;                                                         \
-  Bit32s oow, s, t, lod, ilod;                                                   \
+  Bit32s s, t, lod, ilod;                                                        \
+  double sf, tf, wf;                                                             \
+  double ds1f, dt1f, ds2f, dt2f, rho, rhox, rhoy;                                \
   Bit32s smax, tmax;                                                             \
   Bit32u texbase;                                                                \
   rgb_union c_local;                                                             \
@@ -2884,10 +2823,19 @@ do                                                                              
   /* determine the S/T/LOD values for this texture */                            \
   if (TEXMODE_ENABLE_PERSPECTIVE(TEXMODE))                                       \
   {                                                                              \
-    oow = fast_reciplog((ITERW), &lod);                                          \
-    s = (Bit32s)((Bit64s)oow * (ITERS) >> 29);                                   \
-    t = (Bit32s)((Bit64s)oow * (ITERT) >> 29);                                   \
-    lod += (LODBASE);                                                            \
+    wf = 1.0 / (ITERW);                                                          \
+    sf = wf * (ITERS);                                                           \
+    tf = wf * (ITERT);                                                           \
+    s = (Bit32s)(Bit64s)(sf * 262144);                                           \
+    t = (Bit32s)(Bit64s)(tf * 262144);                                           \
+    ds1f = wf * ((TT)->dsdx - sf * (TT)->dwdx);                                  \
+    dt1f = wf * ((TT)->dtdx - tf * (TT)->dwdx);                                  \
+    rhox = ds1f * ds1f + dt1f * dt1f;                                            \
+    ds2f = wf * ((TT)->dsdy - sf * (TT)->dwdy);                                  \
+    dt2f = wf * ((TT)->dtdy - tf * (TT)->dwdy);                                  \
+    rhoy = ds2f * ds2f + dt2f * dt2f;                                            \
+    rho = BX_MAX(rhox, rhoy);                                                       \
+    lod = fast_log2(rho, 0) / 2;                                                 \
   }                                                                              \
   else                                                                           \
   {                                                                              \
