@@ -2,7 +2,7 @@ name: Build Windows binary
 
 on:
   push:
-    branches: [ "master" ]
+    branches: [ "master", "lodfix2" ]
   pull_request:
     branches: [ "master" ]
 
