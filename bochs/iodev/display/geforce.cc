@@ -3059,17 +3059,17 @@ void bx_geforce_c::d3d_clear_surface(gf_channel* ch)
   if (!d3d_scissor_clip(ch, &dx, &dy, &width, &height))
     return;
   if (ch->d3d_clear_surface & 0x000000F0) {
-    Bit32u pitch = ch->d3d_surface_pitch_a & 0xFFFF;
-    Bit32u draw_offset = ch->d3d_surface_color_offset +
+    Bit32u pitch = ch->d3d_surface_pitches[0] & 0xFFFF;
+    Bit32u draw_offset = ch->d3d_surface_color_offsets[0] +
       dy * pitch + dx * ch->d3d_color_bytes;
-    Bit32u redraw_offset = dma_lin_lookup(ch->d3d_color_obj, draw_offset) -
+    Bit32u redraw_offset = dma_lin_lookup(ch->d3d_color_objs[0], draw_offset) -
       BX_GEFORCE_THIS disp_offset;
     for (Bit32u y = 0; y < height; y++) {
       for (Bit32u x = 0; x < width; x++) {
         if (ch->d3d_color_bytes == 2)
-          dma_write16(ch->d3d_color_obj, draw_offset + x * 2, ch->d3d_color_clear_value);
+          dma_write16(ch->d3d_color_objs[0], draw_offset + x * 2, ch->d3d_color_clear_value);
         else
-          dma_write32(ch->d3d_color_obj, draw_offset + x * 4, ch->d3d_color_clear_value);
+          dma_write32(ch->d3d_color_objs[0], draw_offset + x * 4, ch->d3d_color_clear_value);
       }
       draw_offset += pitch;
     }
@@ -3119,6 +3119,16 @@ float uint32_as_float(Bit32u val)
   return conv.f;
 }
 
+Bit32u float_as_uint32(float val)
+{
+  union {
+    Bit32u ui32;
+    float f;
+  } conv;
+  conv.f = val;
+  return conv.ui32;
+}
+
 void texture_process_format(gf_texture* tex)
 {
   tex->linear = false;
@@ -3134,7 +3144,9 @@ void texture_process_format(gf_texture* tex)
     tex->format &= 0x9f;
   } else if (tex->format == 0x12 ||
              tex->format == 0x1b ||
-             tex->format == 0x1e) {
+             tex->format == 0x1e ||
+             tex->format == 0x4b ||
+             tex->format == 0x4c) {
     tex->linear = true;
     tex->unnormalized = true;
   }
@@ -3164,8 +3176,13 @@ void texture_process_format(gf_texture* tex)
            tex->format == 0x07 ||   // X8R8G8B8
            tex->format == 0x12 ||   // A8R8G8B8
            tex->format == 0x1e ||   // X8R8G8B8
-           tex->format == 0x85)     // A8R8G8B8
+           tex->format == 0x85 ||   // A8R8G8B8
+           tex->format == 0x4c ||   // R32F
+           tex->format == 0x9c)     // R32F
     tex->color_bytes = 4;
+  else if (tex->format == 0x4b ||   // A32B32G32R32F
+           tex->format == 0x9b)     // A32B32G32R32F
+    tex->color_bytes = 16;
   else
     tex->color_bytes = 1;
 }
@@ -3635,6 +3652,35 @@ void bx_geforce_c::d3d_sample_texture(gf_channel* ch,
       color_scale[3] = 1.0f / 255.0f;
       break;
     }
+    case 0x4b:
+    case 0x9b: { // A32B32G32R32F
+      Bit32u value_r = dma_read32(tex->dma_obj, tex_ofs + 0);
+      Bit32u value_g = dma_read32(tex->dma_obj, tex_ofs + 4);
+      Bit32u value_b = dma_read32(tex->dma_obj, tex_ofs + 8);
+      Bit32u value_a = dma_read32(tex->dma_obj, tex_ofs + 12);
+      color_int[0] = 1;
+      color_scale[0] = uint32_as_float(value_a);
+      color_int[1] = 1;
+      color_scale[1] = uint32_as_float(value_r);
+      color_int[2] = 1;
+      color_scale[2] = uint32_as_float(value_g);
+      color_int[3] = 1;
+      color_scale[3] = uint32_as_float(value_b);
+      break;
+    }
+    case 0x4c:
+    case 0x9c: { // R32F
+      Bit32u value_r = dma_read32(tex->dma_obj, tex_ofs);
+      color_int[0] = 1;
+      color_scale[0] = 1.0f;
+      color_int[1] = 1;
+      color_scale[1] = uint32_as_float(value_r);
+      color_int[2] = 1;
+      color_scale[2] = 1.0f;
+      color_int[3] = 1;
+      color_scale[3] = 1.0f;
+      break;
+    }
     default:
       color_int[0] = 1;
       color_scale[0] = 0.8f;
@@ -3919,6 +3965,17 @@ void bx_geforce_c::d3d_vertex_shader(gf_channel* ch, float in[16][4], float out[
       case 0x15: // STR
         for (int comp_index = 0; comp_index < 4; comp_index++)
           vec_result[comp_index] = 1.0f;
+        break;
+      case 0x16: // SSG
+        for (int comp_index = 0; comp_index < 4; comp_index++) {
+          vec_result[comp_index] = params[0][comp_index] == 0.0f ? 0.0f :
+            params[0][comp_index] < 0.0f ? -1.0f : 1.0f;
+        }
+        break;
+      case 0x17: // ARR
+        addr_write = true;
+        for (int comp_index = 0; comp_index < 4; comp_index++)
+          vec_result[comp_index] = round(params[0][comp_index]);
         break;
       default:
         for (int comp_index = 0; comp_index < 4; comp_index++)
@@ -5054,14 +5111,20 @@ void bx_geforce_c::d3d_triangle_clipped(gf_channel* ch, float v0[16][4], float v
     return;
   if (!d3d_scissor_clip(ch, &draw_x1, &draw_y1, &draw_width, &draw_height))
     return;
-  Bit32u pitch = ch->d3d_surface_pitch_a & 0xFFFF;
+  Bit32u rt_count = ch->d3d_surface_color_target == 0x13 ? 2 : 1;
+  Bit32u pitches[2] = { 0 };
+  Bit32u draw_offsets[2] = { 0 };
+  Bit32u redraw_offsets[2] = { 0 };
+  for (int rt = 0; rt < rt_count; rt++) {
+    pitches[rt] = ch->d3d_surface_pitches[rt] & 0xFFFF;
+    draw_offsets[rt] = ch->d3d_surface_color_offsets[rt] +
+      draw_y1 * pitches[rt] + draw_x1 * ch->d3d_color_bytes;
+    redraw_offsets[rt] = dma_lin_lookup(ch->d3d_color_objs[rt], draw_offsets[rt]) -
+      BX_GEFORCE_THIS disp_offset;
+  }
   Bit32u pitch_zeta = d3d_get_surface_pitch_z(ch);
-  Bit32u draw_offset = ch->d3d_surface_color_offset +
-    draw_y1 * pitch + draw_x1 * ch->d3d_color_bytes;
   Bit32u draw_offset_zeta = ch->d3d_surface_zeta_offset +
     draw_y1 * pitch_zeta + draw_x1 * ch->d3d_depth_bytes;
-  Bit32u redraw_offset = dma_lin_lookup(ch->d3d_color_obj, draw_offset) -
-    BX_GEFORCE_THIS disp_offset;
   bool interpolate[16];
   for (int a = 0; a < 16; a++) {
     bool result = false;
@@ -5095,9 +5158,14 @@ void bx_geforce_c::d3d_triangle_clipped(gf_channel* ch, float v0[16][4], float v
   bool rc_enable = ch->d3d_combiner_control_num_stages != 0;
   float ps_tmp_regs16[64][4];
   float ps_tmp_regs32[64][4];
-  float (*ps_tmp_regs_exp)[4] = ps_tmp_regs16;
-  if (ps_enable && ((ch->d3d_shader_control & 0x00000040) != 0))
-    ps_tmp_regs_exp = ps_tmp_regs32;
+  float* ps_out_regs[2];
+  if (ps_enable && ((ch->d3d_shader_control & 0x00000040) != 0)) {
+    ps_out_regs[0] = ps_tmp_regs32[0];
+    ps_out_regs[1] = ps_tmp_regs32[2];
+  } else {
+    ps_out_regs[0] = ps_tmp_regs16[0];
+    ps_out_regs[1] = ps_tmp_regs16[4];
+  }
   for (Bit16u y = 0; y < draw_height; y++, xy[1]++) {
     xy[0] = draw_x1 + 0.5f;
     for (Bit16u x = 0; x < draw_width; x++, xy[0]++) {
@@ -5325,96 +5393,130 @@ void bx_geforce_c::d3d_triangle_clipped(gf_channel* ch, float v0[16][4], float v
             }
           }
         }
-        d3d_register_combiners(ch, rc_regs, ps_tmp_regs_exp[0]);
+        d3d_register_combiners(ch, rc_regs, ps_out_regs[0]);
       }
-      float a = BX_MIN(BX_MAX(ps_tmp_regs_exp[0][3], 0.0f), 1.0f);
-      if (ch->d3d_alpha_test_enable) {
-        if (!compare(ch->d3d_alpha_func, (Bit32u)(a * 255.0f), ch->d3d_alpha_ref))
-          continue;
-      }
-      float r = BX_MIN(BX_MAX(ps_tmp_regs_exp[0][0], 0.0f), 1.0f);
-      float g = BX_MIN(BX_MAX(ps_tmp_regs_exp[0][1], 0.0f), 1.0f);
-      float b = BX_MIN(BX_MAX(ps_tmp_regs_exp[0][2], 0.0f), 1.0f);
-      if (ch->d3d_blend_enable) {
-        float sr = r;
-        float sg = g;
-        float sb = b;
-        float sa = a;
-        float dr, dg, db, da;
-        if (ch->d3d_color_bytes == 2) {
-          Bit16u color = dma_read16(ch->d3d_color_obj, draw_offset + x * 2);
-          dr = ((color >> 11) & 0x1f) / 31.0f;
-          dg = ((color >> 5) & 0x3f) / 63.0f;
-          db = ((color >> 0) & 0x1f) / 31.0f;
-          da = 1.0f;
-        } else if (ch->d3d_color_bytes == 4) {
-          Bit32u color = dma_read32(ch->d3d_color_obj, draw_offset + x * 4);
-          dr = ((color >> 16) & 0xff) / 255.0f;
-          dg = ((color >> 8) & 0xff) / 255.0f;
-          db = ((color >> 0) & 0xff) / 255.0f;
-          da = ((color >> 24) & 0xff) / 255.0f;
-        } else {
-          Bit8u color = dma_read8(ch->d3d_color_obj, draw_offset + x);
-          dr = 0.0f;
-          dg = 0.0f;
-          db = color / 255.0f;
-          da = 1.0f;
+      for (int rt = 0; rt < rt_count; rt++) {
+        float* ps_out_reg = ps_out_regs[rt];
+        float a = BX_MIN(BX_MAX(ps_out_reg[3], 0.0f), 1.0f);
+        if (ch->d3d_alpha_test_enable) {
+          if (!compare(ch->d3d_alpha_func, (Bit32u)(a * 255.0f), ch->d3d_alpha_ref))
+            continue;
         }
-        r = blend_equation(ch->d3d_blend_equation_rgb,
-              sr, blend_factor(ch->d3d_blend_sfactor_rgb, sr, sa, dr, da,
-                               ch->d3d_blend_color[0], ch->d3d_blend_color[3]),
-              dr, blend_factor(ch->d3d_blend_dfactor_rgb, sr, sa, dr, da,
-                               ch->d3d_blend_color[0], ch->d3d_blend_color[3]));
-        g = blend_equation(ch->d3d_blend_equation_rgb,
-              sg, blend_factor(ch->d3d_blend_sfactor_rgb, sg, sa, dg, da,
-                               ch->d3d_blend_color[1], ch->d3d_blend_color[3]),
-              dg, blend_factor(ch->d3d_blend_dfactor_rgb, sg, sa, dg, da,
-                               ch->d3d_blend_color[1], ch->d3d_blend_color[3]));
-        b = blend_equation(ch->d3d_blend_equation_rgb,
-              sb, blend_factor(ch->d3d_blend_sfactor_rgb, sb, sa, db, da,
-                               ch->d3d_blend_color[2], ch->d3d_blend_color[3]),
-              db, blend_factor(ch->d3d_blend_dfactor_rgb, sb, sa, db, da,
-                               ch->d3d_blend_color[2], ch->d3d_blend_color[3]));
-        a = blend_equation(ch->d3d_blend_equation_alpha,
-              sa, blend_factor(ch->d3d_blend_sfactor_alpha, sa, sa, da, da,
-                               ch->d3d_blend_color[3], ch->d3d_blend_color[3]),
-              da, blend_factor(ch->d3d_blend_dfactor_alpha, sa, sa, da, da,
-                               ch->d3d_blend_color[3], ch->d3d_blend_color[3]));
-        r = BX_MIN(BX_MAX(r, 0.0f), 1.0f);
-        g = BX_MIN(BX_MAX(g, 0.0f), 1.0f);
-        b = BX_MIN(BX_MAX(b, 0.0f), 1.0f);
-        a = BX_MIN(BX_MAX(a, 0.0f), 1.0f);
-      }
-      if (ch->d3d_color_mask != 0) {
-        if (ch->d3d_color_bytes == 2) {
-          Bit8u r5 = r * 31.0f + 0.5f;
-          Bit8u g6 = g * 63.0f + 0.5f;
-          Bit8u b5 = b * 31.0f + 0.5f;
-          Bit16u color = b5 << 0 | g6 << 5 | r5 << 11;
-          dma_write16(ch->d3d_color_obj, draw_offset + x * 2, color);
-        } else if (ch->d3d_color_bytes == 4) {
-          Bit8u r8 = r * 255.0f + 0.5f;
-          Bit8u g8 = g * 255.0f + 0.5f;
-          Bit8u b8 = b * 255.0f + 0.5f;
-          Bit8u a8 = a * 255.0f + 0.5f;
-          Bit32u color = b8 << 0 | g8 << 8 | r8 << 16 | a8 << 24;
-          dma_write32(ch->d3d_color_obj, draw_offset + x * 4, color);
-        } else {
-          Bit8u color = b * 255.0f + 0.5f;
-          dma_write8(ch->d3d_color_obj, draw_offset + x, color);
+        float r = BX_MIN(BX_MAX(ps_out_reg[0], 0.0f), 1.0f);
+        float g = BX_MIN(BX_MAX(ps_out_reg[1], 0.0f), 1.0f);
+        float b = BX_MIN(BX_MAX(ps_out_reg[2], 0.0f), 1.0f);
+        Bit32u color_obj = ch->d3d_color_objs[rt];
+        Bit32u draw_offset = draw_offsets[rt];
+        if (ch->d3d_blend_enable) {
+          float sr = r;
+          float sg = g;
+          float sb = b;
+          float sa = a;
+          float dr, dg, db, da;
+          switch (ch->d3d_color_bytes) {
+            default:
+            case 1: {
+              Bit8u color = dma_read8(color_obj, draw_offset + x);
+              dr = 0.0f;
+              dg = 0.0f;
+              db = color / 255.0f;
+              da = 1.0f;
+              break;
+            }
+            case 2: {
+              Bit16u color = dma_read16(color_obj, draw_offset + x * 2);
+              dr = ((color >> 11) & 0x1f) / 31.0f;
+              dg = ((color >> 5) & 0x3f) / 63.0f;
+              db = ((color >> 0) & 0x1f) / 31.0f;
+              da = 1.0f;
+              break;
+            }
+            case 4: {
+              Bit32u color = dma_read32(color_obj, draw_offset + x * 4);
+              dr = ((color >> 16) & 0xff) / 255.0f;
+              dg = ((color >> 8) & 0xff) / 255.0f;
+              db = ((color >> 0) & 0xff) / 255.0f;
+              da = ((color >> 24) & 0xff) / 255.0f;
+              break;
+            }
+          }
+          r = blend_equation(ch->d3d_blend_equation_rgb,
+                sr, blend_factor(ch->d3d_blend_sfactor_rgb, sr, sa, dr, da,
+                                 ch->d3d_blend_color[0], ch->d3d_blend_color[3]),
+                dr, blend_factor(ch->d3d_blend_dfactor_rgb, sr, sa, dr, da,
+                                 ch->d3d_blend_color[0], ch->d3d_blend_color[3]));
+          g = blend_equation(ch->d3d_blend_equation_rgb,
+                sg, blend_factor(ch->d3d_blend_sfactor_rgb, sg, sa, dg, da,
+                                 ch->d3d_blend_color[1], ch->d3d_blend_color[3]),
+                dg, blend_factor(ch->d3d_blend_dfactor_rgb, sg, sa, dg, da,
+                                 ch->d3d_blend_color[1], ch->d3d_blend_color[3]));
+          b = blend_equation(ch->d3d_blend_equation_rgb,
+                sb, blend_factor(ch->d3d_blend_sfactor_rgb, sb, sa, db, da,
+                                 ch->d3d_blend_color[2], ch->d3d_blend_color[3]),
+                db, blend_factor(ch->d3d_blend_dfactor_rgb, sb, sa, db, da,
+                                 ch->d3d_blend_color[2], ch->d3d_blend_color[3]));
+          a = blend_equation(ch->d3d_blend_equation_alpha,
+                sa, blend_factor(ch->d3d_blend_sfactor_alpha, sa, sa, da, da,
+                                 ch->d3d_blend_color[3], ch->d3d_blend_color[3]),
+                da, blend_factor(ch->d3d_blend_dfactor_alpha, sa, sa, da, da,
+                                 ch->d3d_blend_color[3], ch->d3d_blend_color[3]));
+          r = BX_MIN(BX_MAX(r, 0.0f), 1.0f);
+          g = BX_MIN(BX_MAX(g, 0.0f), 1.0f);
+          b = BX_MIN(BX_MAX(b, 0.0f), 1.0f);
+          a = BX_MIN(BX_MAX(a, 0.0f), 1.0f);
         }
-      }
-      if (ch->d3d_depth_test_enable && ch->d3d_depth_write_enable) {
-        if (ch->d3d_depth_bytes == 2)
-          dma_write16(ch->d3d_zeta_obj, draw_offset_zeta + x * 2, z_new);
-        else
-          dma_write32(ch->d3d_zeta_obj, draw_offset_zeta + x * 4, (z_new << 8) | stencil);
+        if (ch->d3d_color_mask != 0) {
+          switch (ch->d3d_color_bytes) {
+            default:
+            case 1: {
+              Bit8u color = b * 255.0f + 0.5f;
+              dma_write8(color_obj, draw_offset + x, color);
+              break;
+            }
+            case 2: {
+              Bit8u r5 = r * 31.0f + 0.5f;
+              Bit8u g6 = g * 63.0f + 0.5f;
+              Bit8u b5 = b * 31.0f + 0.5f;
+              Bit16u color = b5 << 0 | g6 << 5 | r5 << 11;
+              dma_write16(color_obj, draw_offset + x * 2, color);
+              break;
+            }
+            case 4: {
+              if (ch->d3d_color_float) {
+                dma_write32(color_obj, draw_offset + x * 4, float_as_uint32(r));
+              } else {
+                Bit8u r8 = r * 255.0f + 0.5f;
+                Bit8u g8 = g * 255.0f + 0.5f;
+                Bit8u b8 = b * 255.0f + 0.5f;
+                Bit8u a8 = a * 255.0f + 0.5f;
+                Bit32u color = b8 << 0 | g8 << 8 | r8 << 16 | a8 << 24;
+                dma_write32(color_obj, draw_offset + x * 4, color);
+              }
+              break;
+            }
+            case 16: {
+              dma_write32(color_obj, draw_offset + x * 16 + 0, float_as_uint32(r));
+              dma_write32(color_obj, draw_offset + x * 16 + 4, float_as_uint32(g));
+              dma_write32(color_obj, draw_offset + x * 16 + 8, float_as_uint32(b));
+              dma_write32(color_obj, draw_offset + x * 16 + 12, float_as_uint32(a));
+              break;
+            }
+          }
+        }
+        if (ch->d3d_depth_test_enable && ch->d3d_depth_write_enable) {
+          if (ch->d3d_depth_bytes == 2)
+            dma_write16(ch->d3d_zeta_obj, draw_offset_zeta + x * 2, z_new);
+          else
+            dma_write32(ch->d3d_zeta_obj, draw_offset_zeta + x * 4, (z_new << 8) | stencil);
+        }
       }
     }
-    draw_offset += pitch;
+    draw_offsets[0] += pitches[0];
+    draw_offsets[1] += pitches[1];
     draw_offset_zeta += pitch_zeta;
   }
-  BX_GEFORCE_THIS redraw_area_nd(redraw_offset, draw_width, draw_height);
+  for (int rt = 0; rt < rt_count; rt++)
+    BX_GEFORCE_THIS redraw_area_nd(redraw_offsets[rt], draw_width, draw_height);
 }
 
 void bx_geforce_c::d3d_process_vertex(gf_channel* ch, bool immediate)
@@ -5552,7 +5654,7 @@ void bx_geforce_c::d3d_load_vertex(gf_channel* ch, Bit32u index)
 Bit32u bx_geforce_c::d3d_get_surface_pitch_z(gf_channel* ch)
 {
   if (BX_GEFORCE_THIS card_type <= 0x35)
-    return ch->d3d_surface_pitch_a >> 16;
+    return ch->d3d_surface_pitches[0] >> 16;
   else
     return ch->d3d_surface_pitch_z;
 }
@@ -6128,7 +6230,7 @@ void bx_geforce_c::execute_d3d(gf_channel* ch, Bit32u cls, Bit32u method, Bit32u
   } u;
   u.param_integer = param;
 
-  if (method <= 0x085) { // [1] Workaround for "compiler limit: blocks nested too deeply"
+  if (method <= 0x088) { // [1] Workaround for "compiler limit: blocks nested too deeply"
   if (method == 0x000) {
     // There may be better place for initialization
     if (cls == 0x0096) {
@@ -6140,6 +6242,7 @@ void bx_geforce_c::execute_d3d(gf_channel* ch, Bit32u cls, Bit32u method, Bit32u
       ch->d3d_window_offset_y = 0;
       ch->d3d_attrib_count = 16;
     }
+    ch->d3d_surface_color_target = 1;
     for (Bit32u j = 0; j < ch->d3d_attrib_count; j++) {
       ch->d3d_vertex_data_array_format_type[j] = 0;
       ch->d3d_vertex_data_array_format_size[j] = 0;
@@ -6218,8 +6321,10 @@ void bx_geforce_c::execute_d3d(gf_channel* ch, Bit32u cls, Bit32u method, Bit32u
   else if (method == 0x063 && cls == 0x0096) {
     ch->d3d_vertex_a_obj = param;
     ch->d3d_vertex_b_obj = param;
-  } else if (method == 0x065)
-    ch->d3d_color_obj = param;
+  } else if (method == 0x063 && cls >= 0x0497)
+    ch->d3d_color_objs[1] = param;
+  else if (method == 0x065)
+    ch->d3d_color_objs[0] = param;
   else if (method == 0x066)
     ch->d3d_zeta_obj = param;
   else if (method == 0x067)
@@ -6245,14 +6350,20 @@ void bx_geforce_c::execute_d3d(gf_channel* ch, Bit32u cls, Bit32u method, Bit32u
       format_color = param & 0x0000001F;
       format_depth = (param >> 5) & 0x00000007;
     }
+    ch->d3d_color_float = format_color >= 0xb && format_color <= 0xd;
     if (format_color == 0x9)        // B8
       ch->d3d_color_bytes = 1;
     else if (format_color == 0x3)   // R5G6B5
       ch->d3d_color_bytes = 2;
     else if (format_color == 0x4 || // X8R8G8B8_Z8R8G8B8
              format_color == 0x5 || // X8R8G8B8_O8R8G8B8
-             format_color == 0x8)   // A8R8G8B8
+             format_color == 0x8 || // A8R8G8B8
+             format_color == 0xd)   // R32F
       ch->d3d_color_bytes = 4;
+    else if (format_color == 0xb)   // A16B16G16R16F
+      ch->d3d_color_bytes = 8;
+    else if (format_color == 0xc)   // A32B32G32R32F
+      ch->d3d_color_bytes = 16;
     else
       BX_ERROR(("unknown D3D color format: 0x%01x", format_color));
     if (format_depth == 0)
@@ -6266,11 +6377,17 @@ void bx_geforce_c::execute_d3d(gf_channel* ch, Bit32u cls, Bit32u method, Bit32u
     if (cls == 0x0096)
       ch->d3d_viewport_scale[2] = ch->d3d_depth_bytes == 2 ? 32767.0f : 8388607.0f;
   } else if (method == 0x083)
-    ch->d3d_surface_pitch_a = param;
+    ch->d3d_surface_pitches[0] = param;
   else if (method == 0x084)
-    ch->d3d_surface_color_offset = param;
+    ch->d3d_surface_color_offsets[0] = param;
   else if (method == 0x085)
     ch->d3d_surface_zeta_offset = param;
+  else if (method == 0x086)
+    ch->d3d_surface_color_offsets[1] = param;
+  else if (method == 0x087)
+    ch->d3d_surface_pitches[1] = param;
+  else if (method == 0x088)
+    ch->d3d_surface_color_target = param;
   } else { // [2] Workaround for "compiler limit: blocks nested too deeply"
   if (method == 0x08b && cls > 0x0497)
     ch->d3d_surface_pitch_z = param;

@@ -214,7 +214,7 @@ struct gf_channel
 
   Bit32u d3d_a_obj;
   Bit32u d3d_b_obj;
-  Bit32u d3d_color_obj;
+  Bit32u d3d_color_objs[4];
   Bit32u d3d_zeta_obj;
   Bit32u d3d_vertex_a_obj;
   Bit32u d3d_vertex_b_obj;
@@ -222,10 +222,14 @@ struct gf_channel
   Bit32u d3d_clip_horizontal;
   Bit32u d3d_clip_vertical;
   Bit32u d3d_surface_format;
+  bool d3d_color_float;
   Bit32u d3d_color_bytes;
   Bit32u d3d_depth_bytes;
-  Bit32u d3d_surface_pitch_a;
+  Bit32u d3d_surface_color_target;
+  Bit32u d3d_surface_pitches[4];
   Bit32u d3d_surface_pitch_z;
+  Bit32u d3d_surface_color_offsets[4];
+  Bit32u d3d_surface_zeta_offset;
   bool d3d_local_viewer;
   Bit32u d3d_color_material_emission;
   Bit32u d3d_color_material_ambient;
@@ -242,8 +246,6 @@ struct gf_channel
   Bit32u d3d_window_clip_x2[8];
   Bit32u d3d_window_clip_y1[8];
   Bit32u d3d_window_clip_y2[8];
-  Bit32u d3d_surface_color_offset;
-  Bit32u d3d_surface_zeta_offset;
   Bit32u d3d_combiner_alpha_icw[8];
   Bit32u d3d_combiner_final[2];
   Bit32u d3d_alpha_test_enable;
