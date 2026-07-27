@@ -191,6 +191,7 @@ bool bx_geforce_c::init_vga_extension(void)
   BX_GEFORCE_THIS svga_init_members();
   BX_GEFORCE_THIS svga_init_pcihandlers();
   BX_GEFORCE_THIS bitblt_init();
+  BX_GEFORCE_THIS init_method_handlers();
   BX_GEFORCE_THIS s.CRTC.max_reg = GEFORCE_CRTC_MAX;
   BX_GEFORCE_THIS s.max_xres = 2048;
   BX_GEFORCE_THIS s.max_yres = 1536;
@@ -6120,170 +6121,474 @@ void bx_geforce_c::execute_sifm(gf_channel* ch, Bit32u cls, Bit32u method, Bit32
   }
 }
 
+
+void d3d_mh_object(bx_geforce_c* this_ptr, gf_channel* ch, Bit32u cls, Bit32u method, Bit32u param)
+{
+  // There may be better place for initialization
+  if (cls == 0x0096) {
+    ch->d3d_window_offset_x = 2048;
+    ch->d3d_window_offset_y = 2048;
+    ch->d3d_attrib_count = 8;
+  } else {
+    ch->d3d_window_offset_x = 0;
+    ch->d3d_window_offset_y = 0;
+    ch->d3d_attrib_count = 16;
+  }
+  for (Bit32u j = 0; j < ch->d3d_attrib_count; j++) {
+    ch->d3d_vertex_data_array_format_type[j] = 0;
+    ch->d3d_vertex_data_array_format_size[j] = 0;
+    ch->d3d_vertex_data_array_format_stride[j] = 0;
+    ch->d3d_vertex_data_array_format_dx[j] = false;
+    ch->d3d_vertex_data_array_format_homogeneous[j] = false;
+  }
+  if (cls == 0x0096)
+    ch->d3d_vs_temp_regs_count = 0;
+  else if (cls == 0x0097)
+    ch->d3d_vs_temp_regs_count = 12;
+  else if (cls <= 0x0497)
+    ch->d3d_vs_temp_regs_count = 16;
+  else
+    ch->d3d_vs_temp_regs_count = 32;
+  if (cls == 0x0096) {
+    ch->d3d_combiner_control_num_stages = 2;
+    ch->d3d_tex_coord_count = 2;
+  } else if (cls == 0x0097) {
+    ch->d3d_tex_coord_count = 4;
+  } else {
+    ch->d3d_tex_coord_count = 8;
+  }
+  if (cls == 0x0096) {
+    ch->d3d_attrib_in_color[0] = 1;
+    ch->d3d_attrib_in_color[1] = 2;
+    ch->d3d_attrib_in_normal = 5;
+  } else {
+    ch->d3d_attrib_in_color[0] = 3;
+    ch->d3d_attrib_in_color[1] = 4;
+    ch->d3d_attrib_in_normal = 2;
+  }
+  ch->d3d_attrib_out_color[0] = 3;
+  ch->d3d_attrib_out_color[1] = 4;
+  ch->d3d_attrib_out_fogc = 5;
+  for (Bit32u j = 0; j < 32; j++)
+    ch->d3d_attrib_out_enable[j] = true;
+  for (Bit32u j = 0; j < 16; j++) {
+    ch->d3d_attrib_in_tex_coord[j] = 0xf;
+    ch->d3d_attrib_out_tex_coord[j] = 0xf;
+  }
+  for (Bit32u j = 0; j < ch->d3d_tex_coord_count; j++) {
+    if (cls == 0x0096)
+      ch->d3d_attrib_in_tex_coord[j] = j + 3;
+    else if (cls == 0x0097)
+      ch->d3d_attrib_in_tex_coord[j] = j + 9;
+    else
+      ch->d3d_attrib_in_tex_coord[j] = j + 8;
+    if (cls <= 0x0097)
+      ch->d3d_attrib_out_tex_coord[j] = j + 9;
+    else if (cls <= 0x0497)
+      ch->d3d_attrib_out_tex_coord[j] = j + 8;
+    else
+      ch->d3d_attrib_out_tex_coord[j] = j + 7;
+  }
+  for (Bit32u ci = 0; ci < 4; ci++)
+    ch->d3d_vertex_data_imm[ch->d3d_attrib_in_color[0]][ci] = 1.0f;
+}
+
+void d3d_mh_flip_read(bx_geforce_c* this_ptr, gf_channel* ch, Bit32u cls, Bit32u method, Bit32u param)
+{
+  this_ptr->graph_flip_read = param;
+}
+
+void d3d_mh_flip_write(bx_geforce_c* this_ptr, gf_channel* ch, Bit32u cls, Bit32u method, Bit32u param)
+{
+  this_ptr->graph_flip_write = param;
+}
+
+void d3d_mh_flip_modulo(bx_geforce_c* this_ptr, gf_channel* ch, Bit32u cls, Bit32u method, Bit32u param)
+{
+  this_ptr->graph_flip_modulo = param;
+}
+
+void d3d_mh_flip_incr(bx_geforce_c* this_ptr, gf_channel* ch, Bit32u cls, Bit32u method, Bit32u param)
+{
+  this_ptr->graph_flip_write++;
+  this_ptr->graph_flip_write %= this_ptr->graph_flip_modulo;
+}
+
+void d3d_mh_fifo_wait(bx_geforce_c* this_ptr, gf_channel* ch, Bit32u cls, Bit32u method, Bit32u param)
+{
+  if (this_ptr->graph_flip_read == this_ptr->graph_flip_write) {
+    this_ptr->fifo_wait_flip = true;
+    this_ptr->fifo_wait = true;
+  }
+}
+
+void d3d_mh_a_obj(bx_geforce_c* this_ptr, gf_channel* ch, Bit32u cls, Bit32u method, Bit32u param)
+{
+  ch->d3d_a_obj = param;
+}
+
+void d3d_mh_b_obj(bx_geforce_c* this_ptr, gf_channel* ch, Bit32u cls, Bit32u method, Bit32u param)
+{
+  ch->d3d_b_obj = param;
+}
+
+void d3d_mh_vertex_obj(bx_geforce_c* this_ptr, gf_channel* ch, Bit32u cls, Bit32u method, Bit32u param)
+{
+  ch->d3d_vertex_a_obj = param;
+  ch->d3d_vertex_b_obj = param;
+}
+
+void d3d_mh_color_obj(bx_geforce_c* this_ptr, gf_channel* ch, Bit32u cls, Bit32u method, Bit32u param)
+{
+  ch->d3d_color_obj = param;
+}
+
+void d3d_mh_zeta_obj(bx_geforce_c* this_ptr, gf_channel* ch, Bit32u cls, Bit32u method, Bit32u param)
+{
+  ch->d3d_zeta_obj = param;
+}
+
+void d3d_mh_vertex_a_obj(bx_geforce_c* this_ptr, gf_channel* ch, Bit32u cls, Bit32u method, Bit32u param)
+{
+  ch->d3d_vertex_a_obj = param;
+}
+
+void d3d_mh_vertex_b_obj(bx_geforce_c* this_ptr, gf_channel* ch, Bit32u cls, Bit32u method, Bit32u param)
+{
+  ch->d3d_vertex_b_obj = param;
+}
+
+void d3d_mh_semaphore_obj(bx_geforce_c* this_ptr, gf_channel* ch, Bit32u cls, Bit32u method, Bit32u param)
+{
+  ch->d3d_semaphore_obj = param;
+}
+
+void d3d_mh_report_obj(bx_geforce_c* this_ptr, gf_channel* ch, Bit32u cls, Bit32u method, Bit32u param)
+{
+  ch->d3d_report_obj = param;
+}
+
+void d3d_mh_clip_horizontal(bx_geforce_c* this_ptr, gf_channel* ch, Bit32u cls, Bit32u method, Bit32u param)
+{
+  ch->d3d_clip_horizontal = param;
+}
+
+void d3d_mh_clip_vertical(bx_geforce_c* this_ptr, gf_channel* ch, Bit32u cls, Bit32u method, Bit32u param)
+{
+  ch->d3d_clip_vertical = param;
+}
+
+void d3d_mh_surface_format(bx_geforce_c* this_ptr, gf_channel* ch, Bit32u cls, Bit32u method, Bit32u param)
+{
+  ch->d3d_surface_format = param;
+  Bit32u format_color;
+  Bit32u format_depth;
+  if (cls <= 0x0097) {
+    format_color = param & 0x0000000F;
+    format_depth = (param >> 4) & 0x0000000F;
+  } else {
+    format_color = param & 0x0000001F;
+    format_depth = (param >> 5) & 0x00000007;
+  }
+  if (format_color == 0x9)        // B8
+    ch->d3d_color_bytes = 1;
+  else if (format_color == 0x3)   // R5G6B5
+    ch->d3d_color_bytes = 2;
+  else if (format_color == 0x4 || // X8R8G8B8_Z8R8G8B8
+            format_color == 0x5 || // X8R8G8B8_O8R8G8B8
+            format_color == 0x8)   // A8R8G8B8
+    ch->d3d_color_bytes = 4;
+  else
+    BX_ERROR(("unknown D3D color format: 0x%01x", format_color));
+  if (format_depth == 0)
+    ch->d3d_depth_bytes = ch->d3d_color_bytes;
+  else if (format_depth == 1) // Z16
+    ch->d3d_depth_bytes = 2;
+  else if (format_depth == 2) // Z24S8
+    ch->d3d_depth_bytes = 4;
+  else
+    BX_ERROR(("unknown D3D depth format: 0x%01x", format_depth));
+  if (cls == 0x0096)
+    ch->d3d_viewport_scale[2] = ch->d3d_depth_bytes == 2 ? 32767.0f : 8388607.0f;
+}
+
+void d3d_mh_surface_pitch_a(bx_geforce_c* this_ptr, gf_channel* ch, Bit32u cls, Bit32u method, Bit32u param)
+{
+  ch->d3d_surface_pitch_a = param;
+}
+
+void d3d_mh_surface_color_offset(bx_geforce_c* this_ptr, gf_channel* ch, Bit32u cls, Bit32u method, Bit32u param)
+{
+  ch->d3d_surface_color_offset = param;
+}
+
+void d3d_mh_surface_zeta_offset(bx_geforce_c* this_ptr, gf_channel* ch, Bit32u cls, Bit32u method, Bit32u param)
+{
+  ch->d3d_surface_zeta_offset = param;
+}
+
+void d3d_mh_surface_pitch_z(bx_geforce_c* this_ptr, gf_channel* ch, Bit32u cls, Bit32u method, Bit32u param)
+{
+  ch->d3d_surface_pitch_z = param;
+}
+
+void d3d_mh_combiner_alpha_icw(bx_geforce_c* this_ptr, gf_channel* ch, Bit32u cls, Bit32u method, Bit32u param)
+{
+  Bit32u i = method - 0x098;
+  ch->d3d_combiner_alpha_icw[i] = param;
+}
+
+void d3d_mh_combiner_final(bx_geforce_c* this_ptr, gf_channel* ch, Bit32u cls, Bit32u method, Bit32u param)
+{
+  Bit32u i = method - (cls <= 0x0097 ? 0x0a2 : 0x23d);
+  ch->d3d_combiner_final[i] = param;
+}
+
+void d3d_mh_vertex_data(bx_geforce_c* this_ptr, gf_channel* ch, Bit32u cls, Bit32u method, Bit32u param)
+{
+  if (cls == 0x0096)
+    while (ch->d3d_vertex_data_array_format_size[ch->d3d_attrib_index] == 0) {
+      for (Bit32u ci = 0; ci < 4; ci++) {
+        ch->d3d_vertex_data[ch->d3d_vertex_index][ch->d3d_attrib_index][ci] =
+          ch->d3d_vertex_data_imm[ch->d3d_attrib_index][ci];
+      }
+      ch->d3d_attrib_index--;
+    }
+  if (ch->d3d_comp_index == 0) {
+    ch->d3d_vertex_data[ch->d3d_vertex_index][ch->d3d_attrib_index][2] = 0.0f;
+    ch->d3d_vertex_data[ch->d3d_vertex_index][ch->d3d_attrib_index][3] = 1.0f;
+  }
+  Bit32u format_type = ch->d3d_vertex_data_array_format_type[ch->d3d_attrib_index];
+  if ((format_type == 0 || format_type == 4) &&
+      ch->d3d_vertex_data_array_format_size[ch->d3d_attrib_index] == 4) {
+    unpack_attribute(param, format_type == 0,
+      ch->d3d_vertex_data[ch->d3d_vertex_index][ch->d3d_attrib_index]);
+    ch->d3d_comp_index = 4;
+  } else if (format_type == 5 && ch->d3d_vertex_data_array_format_size[ch->d3d_attrib_index] == 2) {
+    ch->d3d_vertex_data[ch->d3d_vertex_index][ch->d3d_attrib_index][0] = (float)(Bit16s)param;
+    ch->d3d_vertex_data[ch->d3d_vertex_index][ch->d3d_attrib_index][1] = (float)(Bit16s)(param >> 16);
+    ch->d3d_comp_index = 2;
+  } else {
+    ch->d3d_vertex_data[ch->d3d_vertex_index][ch->d3d_attrib_index][
+      ch->d3d_comp_index++] = uint32_as_float(param);
+  }
+  bool process = false;
+  while (ch->d3d_comp_index ==
+          ch->d3d_vertex_data_array_format_size[ch->d3d_attrib_index]) {
+    if (ch->d3d_comp_index == 0) {
+      for (Bit32u ci = 0; ci < 4; ci++) {
+        ch->d3d_vertex_data[ch->d3d_vertex_index][ch->d3d_attrib_index][ci] =
+          ch->d3d_vertex_data_imm[ch->d3d_attrib_index][ci];
+      }
+    } else {
+      ch->d3d_comp_index = 0;
+    }
+    if (cls == 0x0096) {
+      if (ch->d3d_attrib_index == 0) {
+        ch->d3d_attrib_index = 7;
+        process = true;
+        break;
+      } else {
+        ch->d3d_attrib_index--;
+      }
+    } else {
+      if (ch->d3d_attrib_index == 15) {
+        ch->d3d_attrib_index = 0;
+        process = true;
+        break;
+      } else {
+        ch->d3d_attrib_index++;
+      }
+    }
+  }
+  if (process)
+    this_ptr->d3d_process_vertex(ch, false);
+}
+
+void d3d_mh_texture(bx_geforce_c* this_ptr, gf_channel* ch, Bit32u cls, Bit32u method, Bit32u param)
+{
+  Bit32u method_offset = method -
+    (cls == 0x0096 ? 0x086 : (cls == 0x0097 ? 0x6c0 : 0x680));
+  Bit32u texture_index;
+  Bit32u texture_method;
+  if (cls == 0x0096) {
+    texture_index = method_offset & 1;
+    texture_method = method_offset >> 1;
+  } else {
+    texture_index = method_offset >> (cls == 0x0097 ? 4 : 3);
+    texture_method = method_offset & (cls == 0x0097 ? 0xf : 7);
+  }
+  gf_texture* tex = &ch->d3d_texture[texture_index];
+  if (texture_method == 0)
+    tex->offset = param;
+  else if (texture_method == 1) {
+    tex->dma_obj = (param & 3) == 1 ? ch->d3d_a_obj : ch->d3d_b_obj;
+    tex->cubemap = (param & 4) != 0;
+    if (cls == 0x0096) {
+      tex->format = (param >> 7) & 0x1f;
+      tex->levels = (param >> 12) & 0xf;
+      tex->base_size[0] = (param >> 16) & 0xf;
+      tex->base_size[1] = (param >> 20) & 0xf;
+      tex->wrap[0] = (param >> 24) & 0xf;
+      tex->wrap[1] = (param >> 28) & 0xf;
+    } else {
+      tex->format = (param >> 8) & 0xff;
+      tex->levels = (param >> 16) & 0xf;
+      tex->base_size[0] = (param >> 20) & 0xf;
+      tex->base_size[1] = (param >> 24) & 0xf;
+      tex->base_size[2] = (param >> 28) & 0xf;
+    }
+    texture_process_format(tex);
+    texture_update_size(tex, cls);
+  } else if (texture_method == 2 && cls != 0x0096) {
+    tex->wrap[0] = (param >> 0) & 0xf;
+    tex->wrap[1] = (param >> 8) & 0xf;
+    tex->wrap[2] = (param >> 16) & 0xf;
+  } else if ((texture_method == 2 && cls == 0x0096) ||
+              (texture_method == 3 && cls != 0x0096)) {
+    tex->control0 = param;
+    if (cls == 0x4097)
+      tex->enabled = param >> 31;
+    else
+      tex->enabled = (param >> 30) & 1;
+    if (cls == 0x0096)
+      ch->d3d_tex_shader_op[texture_index] = tex->enabled ? 0x01 : 0x00;
+  } else if ((texture_method == 3 && cls == 0x0096) ||
+              (texture_method == 4 && cls != 0x0096)) {
+    tex->control1 = param;
+  } else if ((texture_method == 6 && cls == 0x0096) ||
+              (texture_method == 5 && cls != 0x0096)) {
+    // filtering is not implemented
+    if (cls != 0x0096) {
+      Bit32u signed_argb = param >> 28;
+      tex->signed_any = signed_argb != 0;
+      for (Bit32u i = 0; i < 4; i++)
+        tex->signed_comp[i] = (signed_argb & (1 << i)) != 0;
+    } else {
+      tex->signed_any = false;
+    }
+  } else if ((texture_method == 5 && cls == 0x0096) ||
+              (texture_method == 7 && cls == 0x0097) ||
+              (texture_method == 6 && cls >= 0x0497)) {
+    tex->image_rect = param;
+    texture_update_size(tex, cls);
+  } else if ((texture_method == 7 && cls == 0x0096) ||
+              (texture_method == 8 && cls == 0x0097)) {
+    tex->pal_dma_obj = (param & 1) == 1 ? ch->d3d_b_obj : ch->d3d_a_obj;
+    tex->pal_ofs = param & 0xffffffc0;
+  } else if (texture_method >= 10 && texture_method <= 13 && cls == 0x0097) {
+    tex->offset_matrix[texture_method - 10] = uint32_as_float(param);
+  }
+}
+
+
+void empty_method_handler(bx_geforce_c* this_ptr, gf_channel* ch, Bit32u cls, Bit32u method, Bit32u param)
+{
+}
+
+
+void bx_geforce_c::set_method_handler(Bit32u cls, Bit32u method, gf_method_handler handler)
+{
+  if (cls >= GEFORCE_CLASS_COUNT) {
+    BX_PANIC(("set_method_handler: wrong class 0x%08x", cls));
+    return;
+  }
+  if (method >= GEFORCE_METHOD_COUNT) {
+    BX_PANIC(("set_method_handler: wrong method 0x%08x", method));
+    return;
+  }
+  if (BX_GEFORCE_THIS class_method_handlers[cls][method] == empty_method_handler)
+    BX_GEFORCE_THIS class_method_handlers[cls][method] = handler;
+  else
+    BX_PANIC(("set_method_handler: class 0x%04x method 0x%03x is already set", cls, method));
+}
+
+void bx_geforce_c::set_method_handler(Bit32u cl0096, Bit32u cl0097,
+  Bit32u cl0497, Bit32u cl4097, Bit32u method_start, Bit32u method_end, gf_method_handler handler)
+{
+  if (method_start > method_end) {
+    BX_PANIC(("set_method_handler: method_start 0x%03x > method_end 0x%03x", method_start, method_end));
+    return;
+  }
+  for (Bit32u i = method_start; i <= method_end; i++) {
+    if (cl0096)
+      set_method_handler(0x0096, i, handler);
+    if (cl0097)
+      set_method_handler(0x0097, i, handler);
+    if (cl0497)
+      set_method_handler(0x0497, i, handler);
+    if (cl4097)
+      set_method_handler(0x4097, i, handler);
+  }
+}
+
+void bx_geforce_c::set_method_handler(Bit32u cl0096, Bit32u cl0097,
+  Bit32u cl0497, Bit32u cl4097, Bit32u method, gf_method_handler handler)
+{
+  BX_GEFORCE_THIS set_method_handler(cl0096, cl0097, cl0497, cl4097, method, method, handler);
+}
+
+void bx_geforce_c::init_method_handlers()
+{
+  for (int i = 0; i < GEFORCE_METHOD_COUNT; i++) {
+    BX_GEFORCE_THIS empty_method_handlers[i] = empty_method_handler;
+    BX_GEFORCE_THIS cl0096_method_handlers[i] = empty_method_handler;
+    BX_GEFORCE_THIS cl0097_method_handlers[i] = empty_method_handler;
+    BX_GEFORCE_THIS cl0497_method_handlers[i] = empty_method_handler;
+    BX_GEFORCE_THIS cl4097_method_handlers[i] = empty_method_handler;
+  }
+  for (int i = 0; i < GEFORCE_CLASS_COUNT; i++)
+    BX_GEFORCE_THIS class_method_handlers[i] = BX_GEFORCE_THIS empty_method_handlers;
+  BX_GEFORCE_THIS class_method_handlers[0x0096] = BX_GEFORCE_THIS cl0096_method_handlers;
+  BX_GEFORCE_THIS class_method_handlers[0x0097] = BX_GEFORCE_THIS cl0097_method_handlers;
+  BX_GEFORCE_THIS class_method_handlers[0x0497] = BX_GEFORCE_THIS cl0497_method_handlers;
+  BX_GEFORCE_THIS class_method_handlers[0x4097] = BX_GEFORCE_THIS cl4097_method_handlers;
+
+  set_method_handler(1, 1, 1, 1, 0x000, d3d_mh_object);
+  set_method_handler(1, 1, 1, 1, 0x048, d3d_mh_flip_read);
+  set_method_handler(1, 1, 1, 1, 0x049, d3d_mh_flip_write);
+  set_method_handler(1, 1, 1, 1, 0x04a, d3d_mh_flip_modulo);
+  set_method_handler(1, 1, 1, 1, 0x04b, d3d_mh_flip_incr);
+  set_method_handler(1, 1, 1, 1, 0x04c, d3d_mh_fifo_wait);
+  set_method_handler(1, 1, 1, 1, 0x061, d3d_mh_a_obj);
+  set_method_handler(1, 1, 1, 1, 0x062, d3d_mh_b_obj);
+  set_method_handler(1, 0, 0, 0, 0x063, d3d_mh_vertex_obj);
+  set_method_handler(1, 1, 1, 1, 0x065, d3d_mh_color_obj);
+  set_method_handler(1, 1, 1, 1, 0x066, d3d_mh_zeta_obj);
+  set_method_handler(1, 1, 1, 1, 0x067, d3d_mh_vertex_a_obj);
+  set_method_handler(1, 1, 1, 1, 0x068, d3d_mh_vertex_b_obj);
+  set_method_handler(1, 1, 1, 1, 0x069, d3d_mh_semaphore_obj);
+  set_method_handler(1, 1, 1, 1, 0x06a, d3d_mh_report_obj);
+  set_method_handler(1, 1, 1, 1, 0x080, d3d_mh_clip_horizontal);
+  set_method_handler(1, 1, 1, 1, 0x081, d3d_mh_clip_vertical);
+  set_method_handler(1, 1, 1, 1, 0x082, d3d_mh_surface_format);
+  set_method_handler(1, 1, 1, 1, 0x083, d3d_mh_surface_pitch_a);
+  set_method_handler(1, 1, 1, 1, 0x084, d3d_mh_surface_color_offset);
+  set_method_handler(1, 1, 1, 1, 0x085, d3d_mh_surface_zeta_offset);
+  set_method_handler(0, 0, 0, 1, 0x08b, d3d_mh_surface_pitch_z);
+  set_method_handler(1, 0, 0, 0, 0x098, 0x099, d3d_mh_combiner_alpha_icw);
+  set_method_handler(0, 1, 0, 0, 0x098, 0x09f, d3d_mh_combiner_alpha_icw);
+  set_method_handler(1, 1, 0, 0, 0x0a2, 0x0a3, d3d_mh_combiner_final);
+  set_method_handler(0, 0, 1, 0, 0x23d, 0x23e, d3d_mh_combiner_final);
+  set_method_handler(1, 0, 0, 0, 0x600, 0x6ff, d3d_mh_vertex_data);
+  set_method_handler(0, 1, 1, 1, 0x606, d3d_mh_vertex_data);
+  set_method_handler(1, 0, 0, 0, 0x086, 0x095, d3d_mh_texture);
+  set_method_handler(0, 1, 0, 0, 0x6c0, 0x6ff, d3d_mh_texture);
+  set_method_handler(0, 0, 1, 1, 0x680, 0x6ff, d3d_mh_texture);
+}
+
 void bx_geforce_c::execute_d3d(gf_channel* ch, Bit32u cls, Bit32u method, Bit32u param)
 {
+  BX_GEFORCE_THIS class_method_handlers[cls][method](BX_GEFORCE_THIS_PTR, ch, cls, method, param);
+
   union param_ {
     Bit32u param_integer;
     float param_float;
   } u;
   u.param_integer = param;
 
-  if (method <= 0x085) { // [1] Workaround for "compiler limit: blocks nested too deeply"
-  if (method == 0x000) {
-    // There may be better place for initialization
-    if (cls == 0x0096) {
-      ch->d3d_window_offset_x = 2048;
-      ch->d3d_window_offset_y = 2048;
-      ch->d3d_attrib_count = 8;
-    } else {
-      ch->d3d_window_offset_x = 0;
-      ch->d3d_window_offset_y = 0;
-      ch->d3d_attrib_count = 16;
-    }
-    for (Bit32u j = 0; j < ch->d3d_attrib_count; j++) {
-      ch->d3d_vertex_data_array_format_type[j] = 0;
-      ch->d3d_vertex_data_array_format_size[j] = 0;
-      ch->d3d_vertex_data_array_format_stride[j] = 0;
-      ch->d3d_vertex_data_array_format_dx[j] = false;
-      ch->d3d_vertex_data_array_format_homogeneous[j] = false;
-    }
-    if (cls == 0x0096)
-      ch->d3d_vs_temp_regs_count = 0;
-    else if (cls == 0x0097)
-      ch->d3d_vs_temp_regs_count = 12;
-    else if (cls <= 0x0497)
-      ch->d3d_vs_temp_regs_count = 16;
-    else
-      ch->d3d_vs_temp_regs_count = 32;
-    if (cls == 0x0096) {
-      ch->d3d_combiner_control_num_stages = 2;
-      ch->d3d_tex_coord_count = 2;
-    } else if (cls == 0x0097) {
-      ch->d3d_tex_coord_count = 4;
-    } else {
-      ch->d3d_tex_coord_count = 8;
-    }
-    if (cls == 0x0096) {
-      ch->d3d_attrib_in_color[0] = 1;
-      ch->d3d_attrib_in_color[1] = 2;
-      ch->d3d_attrib_in_normal = 5;
-    } else {
-      ch->d3d_attrib_in_color[0] = 3;
-      ch->d3d_attrib_in_color[1] = 4;
-      ch->d3d_attrib_in_normal = 2;
-    }
-    ch->d3d_attrib_out_color[0] = 3;
-    ch->d3d_attrib_out_color[1] = 4;
-    ch->d3d_attrib_out_fogc = 5;
-    for (Bit32u j = 0; j < 32; j++)
-      ch->d3d_attrib_out_enable[j] = true;
-    for (Bit32u j = 0; j < 16; j++) {
-      ch->d3d_attrib_in_tex_coord[j] = 0xf;
-      ch->d3d_attrib_out_tex_coord[j] = 0xf;
-    }
-    for (Bit32u j = 0; j < ch->d3d_tex_coord_count; j++) {
-      if (cls == 0x0096)
-        ch->d3d_attrib_in_tex_coord[j] = j + 3;
-      else if (cls == 0x0097)
-        ch->d3d_attrib_in_tex_coord[j] = j + 9;
-      else
-        ch->d3d_attrib_in_tex_coord[j] = j + 8;
-      if (cls <= 0x0097)
-        ch->d3d_attrib_out_tex_coord[j] = j + 9;
-      else if (cls <= 0x0497)
-        ch->d3d_attrib_out_tex_coord[j] = j + 8;
-      else
-        ch->d3d_attrib_out_tex_coord[j] = j + 7;
-    }
-    for (Bit32u ci = 0; ci < 4; ci++)
-      ch->d3d_vertex_data_imm[ch->d3d_attrib_in_color[0]][ci] = 1.0f;
-  } else if (method == 0x048)
-    BX_GEFORCE_THIS graph_flip_read = param;
-  else if (method == 0x049)
-    BX_GEFORCE_THIS graph_flip_write = param;
-  else if (method == 0x04a)
-    BX_GEFORCE_THIS graph_flip_modulo = param;
-  else if (method == 0x04b) {
-    BX_GEFORCE_THIS graph_flip_write++;
-    BX_GEFORCE_THIS graph_flip_write %= BX_GEFORCE_THIS graph_flip_modulo;
-  } else if (method == 0x04c) {
-    if (BX_GEFORCE_THIS graph_flip_read == BX_GEFORCE_THIS graph_flip_write) {
-      BX_GEFORCE_THIS fifo_wait_flip = true;
-      BX_GEFORCE_THIS fifo_wait = true;
-    }
-  } else if (method == 0x061)
-    ch->d3d_a_obj = param;
-  else if (method == 0x062)
-    ch->d3d_b_obj = param;
-  else if (method == 0x063 && cls == 0x0096) {
-    ch->d3d_vertex_a_obj = param;
-    ch->d3d_vertex_b_obj = param;
-  } else if (method == 0x065)
-    ch->d3d_color_obj = param;
-  else if (method == 0x066)
-    ch->d3d_zeta_obj = param;
-  else if (method == 0x067)
-    ch->d3d_vertex_a_obj = param;
-  else if (method == 0x068)
-    ch->d3d_vertex_b_obj = param;
-  else if (method == 0x069)
-    ch->d3d_semaphore_obj = param;
-  else if (method == 0x06a)
-    ch->d3d_report_obj = param;
-  else if (method == 0x080)
-    ch->d3d_clip_horizontal = param;
-  else if (method == 0x081)
-    ch->d3d_clip_vertical = param;
-  else if (method == 0x082) {
-    ch->d3d_surface_format = param;
-    Bit32u format_color;
-    Bit32u format_depth;
-    if (cls <= 0x0097) {
-      format_color = param & 0x0000000F;
-      format_depth = (param >> 4) & 0x0000000F;
-    } else {
-      format_color = param & 0x0000001F;
-      format_depth = (param >> 5) & 0x00000007;
-    }
-    if (format_color == 0x9)        // B8
-      ch->d3d_color_bytes = 1;
-    else if (format_color == 0x3)   // R5G6B5
-      ch->d3d_color_bytes = 2;
-    else if (format_color == 0x4 || // X8R8G8B8_Z8R8G8B8
-             format_color == 0x5 || // X8R8G8B8_O8R8G8B8
-             format_color == 0x8)   // A8R8G8B8
-      ch->d3d_color_bytes = 4;
-    else
-      BX_ERROR(("unknown D3D color format: 0x%01x", format_color));
-    if (format_depth == 0)
-      ch->d3d_depth_bytes = ch->d3d_color_bytes;
-    else if (format_depth == 1) // Z16
-      ch->d3d_depth_bytes = 2;
-    else if (format_depth == 2) // Z24S8
-      ch->d3d_depth_bytes = 4;
-    else
-      BX_ERROR(("unknown D3D depth format: 0x%01x", format_depth));
-    if (cls == 0x0096)
-      ch->d3d_viewport_scale[2] = ch->d3d_depth_bytes == 2 ? 32767.0f : 8388607.0f;
-  } else if (method == 0x083)
-    ch->d3d_surface_pitch_a = param;
-  else if (method == 0x084)
-    ch->d3d_surface_color_offset = param;
-  else if (method == 0x085)
-    ch->d3d_surface_zeta_offset = param;
-  } else { // [2] Workaround for "compiler limit: blocks nested too deeply"
-  if (method == 0x08b && cls > 0x0497)
-    ch->d3d_surface_pitch_z = param;
-  else if ((method >= 0x098 && method <= 0x099 && cls == 0x0096) ||
-           (method >= 0x098 && method <= 0x09f && cls == 0x0097)) {
-    Bit32u i = method - 0x098;
-    ch->d3d_combiner_alpha_icw[i] = param;
-  } else if ((method >= 0x0a2 && method <= 0x0a3 && cls <= 0x0097) ||
-             (method >= 0x23d && method <= 0x23e && cls == 0x0497)) {
-    Bit32u i = method - (cls <= 0x0097 ? 0x0a2 : 0x23d);
-    ch->d3d_combiner_final[i] = param;
-  } else if ((method == 0x0a5 && cls <= 0x0097) ||
-             (method == 0x509 && cls == 0x0497)) {
+  if ((method == 0x0a5 && cls <= 0x0097) ||
+      (method == 0x509 && cls == 0x0497)) {
     ch->d3d_local_viewer = (param & 0x00010000) != 0;
   } else if ((method == 0x0a6 && cls <= 0x0097) ||
              (method == 0x0e4 && cls >= 0x0497)) {
@@ -6797,65 +7102,6 @@ void bx_geforce_c::execute_d3d(gf_channel* ch, Bit32u cls, Bit32u method, Bit32u
     Bit32u vertex_last = vertex_first + (param >> 24);
     for (Bit32u v = vertex_first; v <= vertex_last; v++)
       d3d_load_vertex(ch, v);
-  } else if ((method >= 0x600 && method <= 0x6ff && cls == 0x0096) ||
-             (method == 0x606 && cls >= 0x0097)) {
-    if (cls == 0x0096)
-      while (ch->d3d_vertex_data_array_format_size[ch->d3d_attrib_index] == 0) {
-        for (Bit32u ci = 0; ci < 4; ci++) {
-          ch->d3d_vertex_data[ch->d3d_vertex_index][ch->d3d_attrib_index][ci] =
-            ch->d3d_vertex_data_imm[ch->d3d_attrib_index][ci];
-        }
-        ch->d3d_attrib_index--;
-      }
-    if (ch->d3d_comp_index == 0) {
-      ch->d3d_vertex_data[ch->d3d_vertex_index][ch->d3d_attrib_index][2] = 0.0f;
-      ch->d3d_vertex_data[ch->d3d_vertex_index][ch->d3d_attrib_index][3] = 1.0f;
-    }
-    Bit32u format_type = ch->d3d_vertex_data_array_format_type[ch->d3d_attrib_index];
-    if ((format_type == 0 || format_type == 4) &&
-        ch->d3d_vertex_data_array_format_size[ch->d3d_attrib_index] == 4) {
-      unpack_attribute(param, format_type == 0,
-        ch->d3d_vertex_data[ch->d3d_vertex_index][ch->d3d_attrib_index]);
-      ch->d3d_comp_index = 4;
-    } else if (format_type == 5 && ch->d3d_vertex_data_array_format_size[ch->d3d_attrib_index] == 2) {
-      ch->d3d_vertex_data[ch->d3d_vertex_index][ch->d3d_attrib_index][0] = (float)(Bit16s)param;
-      ch->d3d_vertex_data[ch->d3d_vertex_index][ch->d3d_attrib_index][1] = (float)(Bit16s)(param >> 16);
-      ch->d3d_comp_index = 2;
-    } else {
-      ch->d3d_vertex_data[ch->d3d_vertex_index][ch->d3d_attrib_index][
-        ch->d3d_comp_index++] = u.param_float;
-    }
-    bool process = false;
-    while (ch->d3d_comp_index ==
-           ch->d3d_vertex_data_array_format_size[ch->d3d_attrib_index]) {
-      if (ch->d3d_comp_index == 0) {
-        for (Bit32u ci = 0; ci < 4; ci++) {
-          ch->d3d_vertex_data[ch->d3d_vertex_index][ch->d3d_attrib_index][ci] =
-            ch->d3d_vertex_data_imm[ch->d3d_attrib_index][ci];
-        }
-      } else {
-        ch->d3d_comp_index = 0;
-      }
-      if (cls == 0x0096) {
-        if (ch->d3d_attrib_index == 0) {
-          ch->d3d_attrib_index = 7;
-          process = true;
-          break;
-        } else {
-          ch->d3d_attrib_index--;
-        }
-      } else {
-        if (ch->d3d_attrib_index == 15) {
-          ch->d3d_attrib_index = 0;
-          process = true;
-          break;
-        } else {
-          ch->d3d_attrib_index++;
-        }
-      }
-    }
-    if (process)
-      d3d_process_vertex(ch, false);
   } else if (method == 0x607 && cls >= 0x0497) {
     ch->d3d_index_array_offset = param;
   } else if (method == 0x608 && cls >= 0x0497) {
@@ -6923,81 +7169,6 @@ void bx_geforce_c::execute_d3d(gf_channel* ch, Bit32u cls, Bit32u method, Bit32u
     ch->d3d_vertex_data_imm[attrib_index][comp_index] = u.param_float;
     if (comp_index == 3 && attrib_index == 0)
       d3d_process_vertex(ch, true);
-  } else if ((method >= 0x086 && method <= 0x095 && cls == 0x0096) ||
-             (method >= 0x6c0 && method <= 0x6ff && cls == 0x0097) ||
-             (method >= 0x680 && method <= 0x6ff && cls >= 0x0497)) {
-    Bit32u method_offset = method -
-      (cls == 0x0096 ? 0x086 : (cls == 0x0097 ? 0x6c0 : 0x680));
-    Bit32u texture_index;
-    Bit32u texture_method;
-    if (cls == 0x0096) {
-      texture_index = method_offset & 1;
-      texture_method = method_offset >> 1;
-    } else {
-      texture_index = method_offset >> (cls == 0x0097 ? 4 : 3);
-      texture_method = method_offset & (cls == 0x0097 ? 0xf : 7);
-    }
-    gf_texture* tex = &ch->d3d_texture[texture_index];
-    if (texture_method == 0)
-      tex->offset = param;
-    else if (texture_method == 1) {
-      tex->dma_obj = (param & 3) == 1 ? ch->d3d_a_obj : ch->d3d_b_obj;
-      tex->cubemap = (param & 4) != 0;
-      if (cls == 0x0096) {
-        tex->format = (param >> 7) & 0x1f;
-        tex->levels = (param >> 12) & 0xf;
-        tex->base_size[0] = (param >> 16) & 0xf;
-        tex->base_size[1] = (param >> 20) & 0xf;
-        tex->wrap[0] = (param >> 24) & 0xf;
-        tex->wrap[1] = (param >> 28) & 0xf;
-      } else {
-        tex->format = (param >> 8) & 0xff;
-        tex->levels = (param >> 16) & 0xf;
-        tex->base_size[0] = (param >> 20) & 0xf;
-        tex->base_size[1] = (param >> 24) & 0xf;
-        tex->base_size[2] = (param >> 28) & 0xf;
-      }
-      texture_process_format(tex);
-      texture_update_size(tex, cls);
-    } else if (texture_method == 2 && cls != 0x0096) {
-      tex->wrap[0] = (param >> 0) & 0xf;
-      tex->wrap[1] = (param >> 8) & 0xf;
-      tex->wrap[2] = (param >> 16) & 0xf;
-    } else if ((texture_method == 2 && cls == 0x0096) ||
-               (texture_method == 3 && cls != 0x0096)) {
-      tex->control0 = param;
-      if (cls == 0x4097)
-        tex->enabled = param >> 31;
-      else
-        tex->enabled = (param >> 30) & 1;
-      if (cls == 0x0096)
-        ch->d3d_tex_shader_op[texture_index] = tex->enabled ? 0x01 : 0x00;
-    } else if ((texture_method == 3 && cls == 0x0096) ||
-               (texture_method == 4 && cls != 0x0096)) {
-      tex->control1 = param;
-    } else if ((texture_method == 6 && cls == 0x0096) ||
-               (texture_method == 5 && cls != 0x0096)) {
-      // filtering is not implemented
-      if (cls != 0x0096) {
-        Bit32u signed_argb = param >> 28;
-        tex->signed_any = signed_argb != 0;
-        for (Bit32u i = 0; i < 4; i++)
-          tex->signed_comp[i] = (signed_argb & (1 << i)) != 0;
-      } else {
-        tex->signed_any = false;
-      }
-    } else if ((texture_method == 5 && cls == 0x0096) ||
-               (texture_method == 7 && cls == 0x0097) ||
-               (texture_method == 6 && cls >= 0x0497)) {
-      tex->image_rect = param;
-      texture_update_size(tex, cls);
-    } else if ((texture_method == 7 && cls == 0x0096) ||
-               (texture_method == 8 && cls == 0x0097)) {
-      tex->pal_dma_obj = (param & 1) == 1 ? ch->d3d_b_obj : ch->d3d_a_obj;
-      tex->pal_ofs = param & 0xffffffc0;
-    } else if (texture_method >= 10 && texture_method <= 13 && cls == 0x0097) {
-      tex->offset_matrix[texture_method - 10] = u.param_float;
-    }
   } else if (method == 0x758) {
     ch->d3d_shader_control = param;
   } else if (method == 0x75b) {
@@ -7053,7 +7224,6 @@ void bx_geforce_c::execute_d3d(gf_channel* ch, Bit32u cls, Bit32u method, Bit32u
       ch->d3d_attrib_out_enable[i] = (bool)((param >> i) & 1);
     ch->d3d_fog_enable = ch->d3d_attrib_out_enable[4];
   }
-  } // [3] Workaround for "compiler limit: blocks nested too deeply"
 }
 
 int bx_geforce_c::execute_command(Bit32u chid, Bit32u subc, Bit32u method, Bit32u param)
