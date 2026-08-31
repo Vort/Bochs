@@ -3216,39 +3216,56 @@ void bx_geforce_c::d3d_texture_process_format(gf_texture* tex)
 
 void texture_update_size(gf_texture* tex, Bit32u cls)
 {
+  Bit32u lw;
+  Bit32u lh;
+  Bit32u ld;
   if (tex->linear || cls >= 0x4097) {
-    tex->size[0] = tex->size_npot[0];
-    tex->size[1] = tex->size_npot[1];
-    tex->size[2] = tex->size_npot[2];
+    lw = tex->size_npot[0];
+    lh = tex->dimensions > 1 ? tex->size_npot[1] : 1;
+    ld = tex->dimensions > 2 ? tex->size_npot[2] : 1;
   } else {
-    tex->size[0] = 1 << tex->size_log[0];
-    tex->size[1] = 1 << tex->size_log[1];
-    tex->size[2] = 1 << tex->size_log[2];
+    lw = 1 << tex->size_log[0];
+    lh = 1 << tex->size_log[1];
+    ld = 1 << tex->size_log[2];
   }
-  Bit32u lw = tex->size[0];
-  Bit32u lh = tex->size[1];
   tex->face_bytes = 0;
-  for (Bit32u i = 0; i < tex->levels; i++) {
-    Bit32u level_bytes = lw * lh * tex->color_bytes;
+  for (Bit32u lod = 0; lod < tex->levels; lod++) {
+    tex->sizes[lod][0] = lw;
+    tex->sizes[lod][1] = lh;
+    tex->sizes[lod][2] = ld;
+    Bit32u level_bytes = ld * tex->color_bytes;
     if (tex->compressed)
-      level_bytes /= 16;
+      level_bytes *= ALIGN(lw, 4) * ALIGN(lh, 4) / 16;
+    else
+      level_bytes *= lw * lh;
+    tex->level_offset[lod] = tex->face_bytes;
     tex->face_bytes += level_bytes;
     lw /= 2;
     lh /= 2;
+    ld /= 2;
     if (lw == 0)
       lw = 1;
     if (lh == 0)
       lh = 1;
+    if (ld == 0)
+      ld = 1;
   }
   tex->face_bytes = ALIGN(tex->face_bytes, 128);
 }
 
 void bx_geforce_c::d3d_sample_texture(gf_channel* ch,
-  gf_texture* tex, float coords_in[3], float color[4])
+  gf_texture* tex, float coords_in[3], float lodf, float color[4])
 {
+  Bit32u lodi;
+  if (lodf < 0.5f)
+    lodi = 0;
+  else if (lodf >= tex->levels - 0.5f)
+    lodi = tex->levels - 1;
+  else
+    lodi = (Bit32u)(lodf + 0.5f);
+  Bit32u tex_ofs = tex->offset + tex->level_offset[lodi];
   float* coords;
   float coords_cubemap[3];
-  Bit32u tex_ofs = tex->offset;
   if (tex->cubemap) {
     Bit32u face;
     float coords_abs[3];
@@ -3296,11 +3313,12 @@ void bx_geforce_c::d3d_sample_texture(gf_channel* ch,
   } else {
     coords = coords_in;
   }
+  Bit32u* lodSize = tex->sizes[lodi];
   Bit32u xyz[3] = { 0 };
   for (Bit32u i = 0; i < tex->dimensions; i++) {
     if (tex->unnormalized) {
       Bit32s c = coords[i];
-      Bit32u size = tex->size[i];
+      Bit32u size = lodSize[i];
       if (c < 0 || Bit32u(c) >= size) {
         switch (tex->wrap[i]) {
           case 1:  // WRAP
@@ -3340,11 +3358,11 @@ void bx_geforce_c::d3d_sample_texture(gf_channel* ch,
             break;
         }
       }
-      xyz[i] = c == 1.0f ? tex->size[i] - 1 : c * tex->size[i];
+      xyz[i] = c == 1.0f ? lodSize[i] - 1 : c * lodSize[i];
     }
   }
   if (tex->compressed) {
-    Bit32u pitch = tex->size[0] * (tex->dxt_alpha_data ? 4 : 2);
+    Bit32u pitch = lodSize[0] * (tex->dxt_alpha_data ? 4 : 2);
     Bit32u bx = xyz[0] >> 2;
     Bit32u by = xyz[1] >> 2;
     tex_ofs += by * pitch + bx * tex->color_bytes;
@@ -3356,7 +3374,7 @@ void bx_geforce_c::d3d_sample_texture(gf_channel* ch,
       pitch = tex->control1 >> 16;
     tex_ofs += xyz[1] * pitch + xyz[0] * tex->color_bytes;
   } else
-    tex_ofs += swizzle(xyz[0], xyz[1], xyz[2], tex->size[0], tex->size[1], tex->size[2]) * tex->color_bytes;
+    tex_ofs += swizzle(xyz[0], xyz[1], xyz[2], lodSize[0], lodSize[1], lodSize[2]) * tex->color_bytes;
   Bit32s color_int[4];
   float color_scale[4];
   switch (tex->format) {
@@ -4495,13 +4513,15 @@ bool bx_geforce_c::d3d_pixel_shader(gf_channel* ch,
           // fallthrough
         }
         case 0x2f: // TXL
-          // Level of detail parameter is not implemented
         case 0x31: // TXB
           // Bias parameter is not implemented
         case 0x17: { // TEX
           Bit32u tex_unit = (dst_word >> 17) & 0xf;
           gf_texture* tex = &ch->d3d_texture[tex_unit];
-          d3d_sample_texture(ch, tex, params[0], op_result);
+          float lod = 0.0f;
+          if (op == 0x2f)
+            lod = params[1][0];
+          d3d_sample_texture(ch, tex, params[0], lod, op_result);
           if (((dst_word >> 21) & 1) != 0)
             for (int comp_index = 0; comp_index < 4; comp_index++)
               op_result[comp_index] = op_result[comp_index] * 2.0f - 1.0f;
@@ -4568,7 +4588,7 @@ bool bx_geforce_c::d3d_pixel_shader(gf_channel* ch,
           coords[2] = 0.0f;
           Bit32u tex_unit = (dst_word >> 17) & 0xf;
           gf_texture* tex = &ch->d3d_texture[tex_unit];
-          d3d_sample_texture(ch, tex, coords, op_result);
+          d3d_sample_texture(ch, tex, coords, 0.0f, op_result);
           if (((dst_word >> 21) & 1) != 0)
             for (int comp_index = 0; comp_index < 4; comp_index++)
               op_result[comp_index] = op_result[comp_index] * 2.0f - 1.0f;
@@ -5380,6 +5400,9 @@ void bx_geforce_c::d3d_triangle_clipped(gf_channel* ch, float v0[16][4], float v
         ps_in[15][0] = ps_in[5][3];
         ps_in[15][1] = ps_in[6][3];
         ps_in[15][2] = ps_in[7][3];
+        // It may be needed to clear all of them
+        for (Bit32u ci = 0; ci < 4; ci++)
+          ps_tmp_regs32[0][ci] = 0.0f;
         if (d3d_pixel_shader(ch, ps_in, rc_enable ? &rc_regs[8] : ps_tmp_regs16, ps_tmp_regs32))
           continue;
       }
@@ -5401,7 +5424,7 @@ void bx_geforce_c::d3d_triangle_clipped(gf_channel* ch, float v0[16][4], float v
               case 0x02:   // PROJECT3D
               case 0x03: { // CUBEMAP
                 gf_texture* tex = &ch->d3d_texture[t];
-                d3d_sample_texture(ch, tex, ps_in[4 + t], rc_regs[8 + t]);
+                d3d_sample_texture(ch, tex, ps_in[4 + t], 0.0f, rc_regs[8 + t]);
                 break;
               }
               case 0x06: { // BUMPENVMAP
@@ -5416,7 +5439,7 @@ void bx_geforce_c::d3d_triangle_clipped(gf_channel* ch, float v0[16][4], float v
                   tex->offset_matrix[1] * prev_color[2] +
                   tex->offset_matrix[2] * prev_color[1];
                 coords[2] = 0.0f;
-                d3d_sample_texture(ch, tex, coords, rc_regs[8 + t]);
+                d3d_sample_texture(ch, tex, coords, 0.0f, rc_regs[8 + t]);
                 break;
               }
               case 0x0c: { // DOT_RFLCT_SPEC
@@ -5427,7 +5450,7 @@ void bx_geforce_c::d3d_triangle_clipped(gf_channel* ch, float v0[16][4], float v
                 float rv[3];
                 reflection(n, e, rv);
                 gf_texture* tex = &ch->d3d_texture[t];
-                d3d_sample_texture(ch, tex, rv, rc_regs[8 + t]);
+                d3d_sample_texture(ch, tex, rv, 0.0f, rc_regs[8 + t]);
                 break;
               }
               case 0x11: { // DOTPRODUCT

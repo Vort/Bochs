@@ -61,7 +61,8 @@ struct gf_texture
   Bit32u levels;
   Bit32u size_log[3];
   Bit32u size_npot[3];
-  Bit32u size[3];
+  Bit32u sizes[16][3];
+  Bit32u level_offset[16];
   Bit32u face_bytes;
   Bit32u wrap[3];
   Bit32u control0;
@@ -722,7 +723,7 @@ private:
   BX_GEFORCE_SMF void d3d_clear_surface(gf_channel* ch);
   BX_GEFORCE_SMF void d3d_texture_process_format(gf_texture* tex);
   BX_GEFORCE_SMF void d3d_sample_texture(gf_channel* ch,
-    gf_texture* tex, float coords_in[3], float color[4]);
+    gf_texture* tex, float coords_in[3], float lodf, float color[4]);
   BX_GEFORCE_SMF void d3d_vertex_shader(gf_channel* ch, float in[16][4], float out[16][4]);
   BX_GEFORCE_SMF void d3d_register_combiners(gf_channel* ch, float regs[16][4], float out[4]);
   BX_GEFORCE_SMF bool d3d_pixel_shader(gf_channel* ch, float in[16][4], float tmp_regs16[64][4], float tmp_regs32[64][4]);
