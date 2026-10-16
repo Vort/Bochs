@@ -3234,6 +3234,7 @@ void bx_geforce_c::d3d_texture_process_format(gf_texture* tex)
     case 0x1e: // X8R8G8B8
     case 0x3a: // A8B8G8R8
     case 0x85: // A8R8G8B8
+    case 0x9e: // X8R8G8B8
       tex->color_bytes = 4;
       break;
     default:
@@ -3805,7 +3806,8 @@ void bx_geforce_c::d3d_sample_texture(gf_channel* ch,
       break;
     }
     case 0x07:
-    case 0x1e: { // X8R8G8B8
+    case 0x1e:
+    case 0x9e: { // X8R8G8B8
       Bit32u value = dma_read32(tex->dma_obj, tex_ofs);
       color_int[0] = 1;
       color_scale[0] = 1.0f;
@@ -5424,10 +5426,25 @@ void bx_geforce_c::d3d_triangle(gf_channel* ch, Bit32u base)
   }
   bool clipped[3];
   Bit32u clip_count = 0;
-  float clip_thresh = BX_GEFORCE_THIS card_type <= 0x20 ?
-    ch->d3d_viewport_offset[2] - ch->d3d_clip_min : 1.0f;
+  float clip_thresh;
+  bool clip_planes_swap = false;
+  if (BX_GEFORCE_THIS card_type <= 0x20) {
+    if (BX_GEFORCE_THIS card_type == 0x20)
+      clip_planes_swap = ch->d3d_viewport_scale[2] < 0.0f;
+    else
+      clip_planes_swap = ch->d3d_composite_matrix[10] > 0.0f;
+    if (clip_planes_swap)
+      clip_thresh = ch->d3d_viewport_offset[2] - ch->d3d_clip_max;
+    else
+      clip_thresh = ch->d3d_viewport_offset[2] - ch->d3d_clip_min;
+  } else {
+    clip_thresh = 1.0f;
+  }
   for (int v = 0; v < 3; v++) {
-    clipped[v] = vs_out[v][0][2] < -vs_out[v][0][3] * clip_thresh;
+    if (clip_planes_swap)
+      clipped[v] = vs_out[v][0][2] > -vs_out[v][0][3] * clip_thresh;
+    else
+      clipped[v] = vs_out[v][0][2] < -vs_out[v][0][3] * clip_thresh;
     if (clipped[v])
       clip_count++;
   }
@@ -5503,6 +5520,8 @@ void bx_geforce_c::d3d_clip_to_screen(gf_channel* ch, float pos_clip[4], float p
 
 void bx_geforce_c::d3d_triangle_clipped(gf_channel* ch, float v0[16][4], float v1[16][4], float v2[16][4])
 {
+  //if (v0[0][3] <= 0.0f && v1[0][3] <= 0.0f && v2[0][3] <= 0.0f)
+  //  return;
   float sp0[4], sp1[4], sp2[4];
   d3d_clip_to_screen(ch, v0[0], sp0);
   d3d_clip_to_screen(ch, v1[0], sp1);
@@ -5615,7 +5634,7 @@ void bx_geforce_c::d3d_triangle_clipped(gf_channel* ch, float v0[16][4], float v
         b1[fi] *= b012inv;
         b2[fi] *= b012inv;
         z[fi] = sp0[2] * b0[fi] + sp1[2] * b1[fi] + sp2[2] * b2[fi];
-        if (z[fi] > ch->d3d_clip_max)
+        if (z[fi] < ch->d3d_clip_min || z[fi] > ch->d3d_clip_max)
           discard[fi] = true;
       }
       if (discard[0] && discard[1] && discard[2] && discard[3])
