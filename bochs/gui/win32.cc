@@ -931,8 +931,9 @@ void resize_main_window(BOOL disable_fullscreen)
 //  the top left corner of the window.
 void SetWindowPositionFromLast(const char *name, int *ipLeft, int *ipTop)
 {
-  DWORD Left, LeftSize = sizeof(DWORD);
-  DWORD Top, TopSize = sizeof(DWORD);
+  LONG Left, Top;
+  DWORD LeftSize = sizeof(LONG);
+  DWORD TopSize = sizeof(LONG);
   char SubKey[128];
 
   // read from the registry
@@ -941,20 +942,18 @@ void SetWindowPositionFromLast(const char *name, int *ipLeft, int *ipTop)
   sprintf(SubKey, "%sTop", name);
   LONG resTop = RegGetValue(HKEY_CURRENT_USER, szRegLocation, SubKey, RRF_RT_DWORD, NULL, &Top, &TopSize);
   if ((resLeft == ERROR_SUCCESS) && (resTop == ERROR_SUCCESS)) {
-    // Make sure we don't move off the left/top of the screen
-    if ((int) Left < 0) Left = 0;
-    if ((int) Top < 0) Top = 0;
-
     // check to make sure we don't move clear off the right/bottom of screen
     //  (this can happen if the user changes the Host screen size to a smaller size)
-    if (Left > (desktop_x - 25)) Left = (desktop_x - 25);
-    if (Top > (desktop_y - 25)) Top = (desktop_y - 25);
-    
+    if (Left > ((LONG)desktop_x - 25) || Top > ((LONG)desktop_y - 25))
+      return;
+
     // send the new values
     if (ipLeft) *ipLeft = (int) Left;
     if (ipTop) *ipTop = (int) Top;
   }
 }
+
+static_assert(sizeof(LONG) == sizeof(DWORD), "On Windows platform LONG should be the same size as DWORD (32 bits)");
 
 // Save the coord's of the specified window to the registry so that next time
 //  we can place the window in the same place
@@ -967,14 +966,10 @@ void GetWindowPostitionForNext(HWND Wnd, const char *name)
   if (result == ERROR_SUCCESS) {
     RECT Rect;
     if (GetWindowRect(Wnd, &Rect)) {
-      // LONG might not be the same size as DWORD
-      DWORD Left = (DWORD) Rect.left;
-      DWORD Top = (DWORD) Rect.top;
-
       sprintf(SubKey, "%sLeft", name);
-      RegSetValueEx(hKey, SubKey, 0, REG_DWORD, (const BYTE *) &Left, sizeof(DWORD));
+      RegSetValueEx(hKey, SubKey, 0, REG_DWORD, (const BYTE *) &Rect.left, sizeof(LONG));
       sprintf(SubKey, "%sTop", name);
-      RegSetValueEx(hKey, SubKey, 0, REG_DWORD, (const BYTE *) &Top, sizeof(DWORD));
+      RegSetValueEx(hKey, SubKey, 0, REG_DWORD, (const BYTE *) &Rect.top, sizeof(LONG));
     }
     RegCloseKey(hKey);
   }
