@@ -938,7 +938,7 @@ void resize_main_window(BOOL disable_fullscreen)
 // name -> 'Window Name' which will be appended with "Left" or "Top"
 // ipLeft and ipTop, if this function is successful, will be updated with
 //  the top left corner of the window.
-void SetWindowPositionFromLast(const char *name, int *ipLeft, int *ipTop)
+void LoadWindowPosition(const char *name, int *ipLeft, int *ipTop)
 {
   LONG Left, Top;
   DWORD LeftSize = sizeof(LONG);
@@ -966,7 +966,7 @@ static_assert(sizeof(LONG) == sizeof(DWORD), "On Windows platform LONG should be
 
 // Save the coord's of the specified window to the registry so that next time
 //  we can place the window in the same place
-void GetWindowPostitionForNext(HWND Wnd, const char *name)
+void SaveWindowPosition(HWND Wnd, const char *name)
 {
   char SubKey[128];
   HKEY hKey;
@@ -1027,7 +1027,7 @@ DWORD WINAPI UIThread(LPVOID)
   AdjustWindowRectEx(&wndRect, sim_style, FALSE, sim_exstyle);
   DWORD main_style = WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
   AdjustWindowRect(&wndRect, main_style, FALSE);
-  SetWindowPositionFromLast("MainWin", &left, &top);
+  LoadWindowPosition("MainWin", &left, &top);
   stInfo.mainWnd = CreateWindow (szAppName,
                      szWindowName,
                      main_style,
@@ -1218,6 +1218,8 @@ LRESULT CALLBACK mainWndProc(HWND hwnd, UINT iMsg, WPARAM wParam, LPARAM lParam)
     return 0;
 
   case WM_CLOSE:
+    // Save the coord's of the window for next time
+    SaveWindowPosition(stInfo.mainWnd, "MainWin");
     SendMessage(stInfo.simWnd, WM_CLOSE, 0, 0);
     break;
 
@@ -2221,10 +2223,7 @@ void bx_win32_gui_c::exit(void)
   }
 #endif
 
-  // Save the coord's of the window for next time
-  GetWindowPostitionForNext(stInfo.mainWnd, "MainWin");
-
-  // kill thread first...
+  // kill thread first (window position is saved by WM_CLOSE handler)...
   PostMessage(stInfo.mainWnd, WM_CLOSE, 0, 0);
 
   // Wait until it dies
